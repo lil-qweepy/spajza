@@ -262,7 +262,7 @@ fun NumField(
     OutlinedTextField(
         value = value,
         onValueChange = { s -> onValue(s.filter { it.isDigit() || it == ',' || it == '.' }) },
-        label = { Text(label) },
+        label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         suffix = if (suffix != null) ({ Text(suffix) }) else null,
         supportingText = if (supporting != null) ({ Text(supporting) }) else null,
         singleLine = true,
@@ -277,7 +277,7 @@ fun TextField2(
     modifier: Modifier = Modifier, singleLine: Boolean = true, keyboard: KeyboardType = KeyboardType.Text
 ) {
     OutlinedTextField(
-        value = value, onValueChange = onValue, label = { Text(label) },
+        value = value, onValueChange = onValue, label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         singleLine = singleLine, modifier = modifier,
         keyboardOptions = KeyboardOptions(keyboardType = keyboard)
     )

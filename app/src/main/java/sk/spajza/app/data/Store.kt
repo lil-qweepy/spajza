@@ -28,6 +28,10 @@ private val DEFAULT_PLACES: List<String> = listOf(
  * Kazda zmena sa zapise na pozadi. Poskodeny subor sa nikdy nezmaze, ulozi sa bokom.
  */
 /** Posledna zmena, ktoru je mozne vratit. */
+/** Bezpecny nazov suboru obrazka: bez lomitok a "..", aby sa nedalo vyjst z priecinka obrazkov. */
+fun isSafeImageName(name: String?): Boolean =
+    name != null && !name.contains("..") && Regex("[A-Za-z0-9_][A-Za-z0-9_.-]{0,100}").matches(name)
+
 data class UndoInfo(val id: Long, val label: String, val snapshot: Db)
 
 /** Navrh pridat produkt do nakupneho zoznamu po spotrebe. */
@@ -542,7 +546,7 @@ class Store(private val context: Context) {
                 val eff = s.effPrice()
                 val existing = s.itemId?.let { id -> x.items.firstOrNull { it.id == id } }
                     ?: x.items.firstOrNull { it.name.equals(s.name, ignoreCase = true) }
-                val item: Item
+                var item: Item
                 if (existing == null) {
                     val bp = Calc.basisFor(s.uom, eff)
                     val created = Item(
@@ -558,6 +562,12 @@ class Store(private val context: Context) {
                     item = upd
                 } else {
                     item = existing
+                }
+                if (s.packSize > 0 && item.uom.isCountable && s.uom.isCountable && item.net <= 0) {
+                    // Velkost balenia zo zoznamu sa ulozi do produktu (obsah 1 ks), aby fungoval prepocet na kg / l.
+                    val upd = item.copy(net = s.packSize, netLiquid = s.packLiquid)
+                    x = x.copy(items = x.items.map { if (it.id == upd.id) upd else it })
+                    item = upd
                 }
                 val qty = convertQty(s.qty, s.uom, item.uom)
                 val place = item.placeId ?: x.places.firstOrNull()?.id
@@ -639,7 +649,7 @@ class Store(private val context: Context) {
     }
 
     fun imageFile(name: String?): File? {
-        if (name == null) return null
+        if (name == null || !isSafeImageName(name)) return null
         val f = File(imagesDir, name)
         return if (f.exists()) f else null
     }
@@ -664,7 +674,7 @@ class Store(private val context: Context) {
 
     suspend fun downloadOffImage(off: OffProduct): String? {
         val url = off.imageUrl ?: return null
-        val name = "off_" + off.ean.ifBlank { UUID.randomUUID().toString() } + ".jpg"
+        val name = "off_" + (if (Regex("[0-9]{6,14}").matches(off.ean)) off.ean else UUID.randomUUID().toString()) + ".jpg"
         return if (OpenFoodFacts.downloadImage(url, File(imagesDir, name))) name else null
     }
 

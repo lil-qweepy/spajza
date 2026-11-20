@@ -41,6 +41,26 @@ object OpenFoodFacts {
         "brand_owner,image_front_url,image_url,categories,categories_tags,quantity,product_quantity," +
         "product_quantity_unit,nutriments"
 
+    /** Najvacsia prijata odpoved servera (JSON) a obrazok; ochrana pred zahltenim pamate a uloziska. */
+    private const val MAX_JSON_BYTES = 2_000_000
+    private const val MAX_IMAGE_BYTES = 8_000_000
+
+    private fun readBounded(conn: HttpURLConnection, max: Int): String {
+        conn.inputStream.use { input ->
+            val buf = java.io.ByteArrayOutputStream()
+            val tmp = ByteArray(8192)
+            var total = 0
+            while (true) {
+                val n = input.read(tmp)
+                if (n < 0) break
+                total += n
+                if (total > max) throw java.io.IOException("Odpoveď servera je príliš veľká")
+                buf.write(tmp, 0, n)
+            }
+            return buf.toString("UTF-8")
+        }
+    }
+
     private const val OFF_HOST = "world.openfoodfacts.org"
     private const val OPF_HOST = "world.openproductsfacts.org"
 
@@ -76,7 +96,7 @@ object OpenFoodFacts {
             val code = conn.responseCode
             if (code == 404 || code == 429) return@withContext OffResult.NotFound
             if (code !in 200..299) return@withContext OffResult.NotFound
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            val body = readBounded(conn, MAX_JSON_BYTES)
             val arr = JSONObject(body).optJSONArray("items") ?: return@withContext OffResult.NotFound
             val p = arr.optJSONObject(0) ?: return@withContext OffResult.NotFound
             val title = p.str("title")
@@ -87,7 +107,7 @@ object OpenFoodFacts {
             OffResult.Found(
                 OffProduct(
                     ean = ean, name = title, brand = p.str("brand"), manufacturer = "", categoryHint = p.str("category"),
-                    imageUrl = if (img.startsWith("http")) img else null,
+                    imageUrl = if (img.startsWith("https://")) img else null,
                     netAmount = qty?.first ?: 0.0, netIsLiquid = qty?.second ?: false,
                     kcal100 = null, protein100 = null, fat100 = null, satFat100 = null,
                     carbs100 = null, sugar100 = null, fiber100 = null, salt100 = null, isWater = false
@@ -111,7 +131,7 @@ object OpenFoodFacts {
             val code = conn.responseCode
             if (code == 404) return@withContext OffResult.NotFound
             if (code !in 200..299) return@withContext OffResult.Error("Server vrátil chybu $code")
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            val body = readBounded(conn, MAX_JSON_BYTES)
             val root = JSONObject(body)
             if (root.optInt("status", 0) != 1) return@withContext OffResult.NotFound
             val p = root.optJSONObject("product") ?: return@withContext OffResult.NotFound
@@ -152,11 +172,11 @@ object OpenFoodFacts {
         conn.readTimeout = 20_000
         conn.setRequestProperty("User-Agent", UA)
         if (conn.responseCode !in 200..299) throw java.io.IOException("Server vrátil chybu ${conn.responseCode}")
-        val body = conn.inputStream.bufferedReader().use { it.readText() }
+        val body = readBounded(conn, MAX_JSON_BYTES)
         val arr = JSONObject(body).optJSONArray("products") ?: return emptyList<OffProduct>()
         val list = (0 until arr.length()).mapNotNull { i ->
             val p = arr.optJSONObject(i) ?: return@mapNotNull null
-            val o = parse(p.str("code"), p)
+            val o = parse(p.str("code").filter { it in '0'..'9' }, p)
             if (o.name.isBlank()) null else o
         }
         return list.sortedByDescending { it.kcal100 != null }
@@ -254,13 +274,28 @@ object OpenFoodFacts {
     /** Stiahne obrazok do lokalneho uloziska; vrati nazov suboru alebo null. */
     suspend fun downloadImage(url: String, target: File): Boolean = withContext(Dispatchers.IO) {
         try {
+            if (!url.startsWith("https://")) return@withContext false
             val conn = URL(url).openConnection() as HttpURLConnection
             conn.connectTimeout = 10_000
             conn.readTimeout = 20_000
             conn.setRequestProperty("User-Agent", UA)
             if (conn.responseCode !in 200..299) return@withContext false
+            if (conn.contentType?.lowercase()?.startsWith("image/") != true) return@withContext false
+            if (conn.contentLengthLong > MAX_IMAGE_BYTES) return@withContext false
             target.parentFile?.mkdirs()
-            conn.inputStream.use { input -> target.outputStream().use { out -> input.copyTo(out) } }
+            conn.inputStream.use { input ->
+                target.outputStream().use { out ->
+                    val tmp = ByteArray(8192)
+                    var total = 0L
+                    while (true) {
+                        val n = input.read(tmp)
+                        if (n < 0) break
+                        total += n
+                        if (total > MAX_IMAGE_BYTES) throw java.io.IOException("Obrázok je príliš veľký")
+                        out.write(tmp, 0, n)
+                    }
+                }
+            }
             target.length() > 0
         } catch (e: Exception) {
             target.delete()

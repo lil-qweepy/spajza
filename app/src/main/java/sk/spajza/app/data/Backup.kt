@@ -12,6 +12,26 @@ import java.util.zip.ZipOutputStream
 object Backup {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
+    private const val MAX_JSON = 30_000_000L
+    private const val MAX_IMAGE = 12_000_000L
+    private const val MAX_TOTAL = 250_000_000L
+    private const val MAX_ENTRIES = 10_000
+
+    /** Precita polozku ZIPu najviac [max] bajtov; pri vacsej vyhodi chybu (ochrana pred zip bombou). */
+    private fun readLimited(zip: ZipInputStream, max: Long): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        val tmp = ByteArray(8192)
+        var total = 0L
+        while (true) {
+            val n = zip.read(tmp)
+            if (n < 0) break
+            total += n
+            if (total > max) throw IllegalStateException("Záloha obsahuje príliš veľký súbor")
+            out.write(tmp, 0, n)
+        }
+        return out.toByteArray()
+    }
+
     fun export(context: Context, store: Store, uri: Uri): Result<Int> = try {
         var count = 0
         context.contentResolver.openOutputStream(uri)?.use { out ->
@@ -43,14 +63,25 @@ object Backup {
         context.contentResolver.openInputStream(uri)?.use { input ->
             ZipInputStream(input.buffered()).use { zip ->
                 var e = zip.nextEntry
+                var entries = 0
+                var total = 0L
                 while (e != null) {
+                    if (++entries > MAX_ENTRIES) throw IllegalStateException("Záloha obsahuje príliš veľa súborov")
                     val name = e.name
                     if (!e.isDirectory) {
                         if (name == "data.json") {
-                            text = String(zip.readBytes(), Charsets.UTF_8)
+                            val b = readLimited(zip, MAX_JSON)
+                            total += b.size
+                            text = String(b, Charsets.UTF_8)
                         } else if (name.startsWith("images/") && !name.contains("..")) {
-                            images.add(File(name).name to zip.readBytes())
+                            val n = File(name).name
+                            if (isSafeImageName(n)) {
+                                val b = readLimited(zip, MAX_IMAGE)
+                                total += b.size
+                                images.add(n to b)
+                            }
                         }
+                        if (total > MAX_TOTAL) throw IllegalStateException("Záloha je príliš veľká")
                     }
                     zip.closeEntry()
                     e = zip.nextEntry
@@ -58,7 +89,9 @@ object Backup {
             }
         } ?: throw IllegalStateException("Súbor sa nepodarilo otvoriť")
         val t = text ?: throw IllegalStateException("V súbore chýba data.json – nie je to záloha Špajze")
-        val db = json.decodeFromString(Db.serializer(), t)
+        val parsed = json.decodeFromString(Db.serializer(), t)
+        // Cesty k obrazkom zo zalohy sa neduveruju: povoleny je len bezny nazov suboru.
+        val db = parsed.copy(items = parsed.items.map { if (it.image != null && !isSafeImageName(it.image)) it.copy(image = null) else it })
         for ((n, bytes) in images) File(store.imagesDir, n).writeBytes(bytes)
         store.replaceAll(db)
         Result.success(db.items.size)

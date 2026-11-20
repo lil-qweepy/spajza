@@ -133,8 +133,29 @@ data class ShopItem(
     val note: String = "",
     /** Mnozstvova akcia "kup X, zaplat Y" (napr. 2 a 1); 0 = bez nej. */
     val buyQty: Double = 0.0,
-    val payQty: Double = 0.0
+    val payQty: Double = 0.0,
+    /** Velkost jedneho balenia v g alebo ml (napr. 150 alebo 250); 0 = nezadane (nepovinne). */
+    val packSize: Double = 0.0,
+    val packLiquid: Boolean = false
 ) {
+    /** Velkost balenia ako text (napr. "250 g" alebo "1,5 l"); prazdny, ak nie je zadana. */
+    fun packText(): String =
+        if (packSize <= 0) "" else if (packLiquid) Calc.volumeText(packSize) else Calc.massText(packSize)
+
+    /** Skutocna cena za kg alebo l (podla balenia alebo jednotky) a jednotka; null, ak sa neda urcit. */
+    fun perKgL(): Pair<Double, String>? {
+        val e = effPrice()
+        if (e <= 0) return null
+        return when {
+            uom == Uom.KG -> e to "kg"
+            uom == Uom.G -> (e * 1000) to "kg"
+            uom == Uom.L -> e to "l"
+            uom == Uom.ML -> (e * 1000) to "l"
+            uom.isCountable && packSize > 0 -> (e / (packSize / 1000.0)) to (if (packLiquid) "l" else "kg")
+            else -> null
+        }
+    }
+
     val multiBuy: Boolean get() = buyQty > 1.0 && payQty > 0 && payQty < buyQty
 
     /** Cena za cele mnozstvo s ohladom na akciu "kup X, zaplat Y". */

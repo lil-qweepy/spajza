@@ -230,9 +230,15 @@ fun ShopScreen() {
                             )
                             Muted(
                                 Calc.qty(s.qty, s.uom) +
+                                    (if (s.packSize > 0 && s.uom.isCountable) " · balenie " + s.packText() else "") +
                                     (if (s.price > 0) " · " + Calc.money(s.price) + " / " + s.uom.label + " = " + Calc.money(s.cost()) else "") +
                                     (if (s.store.isNotBlank()) " · " + s.store else "")
                             )
+                            val pk = s.perKgL()
+                            if (pk != null && s.packSize > 0 && s.uom.isCountable) {
+                                Muted("Spolu " + (if (s.packLiquid) Calc.volumeText(s.packSize * s.qty) else Calc.massText(s.packSize * s.qty)) +
+                                    " · " + Calc.money(pk.first) + " / " + pk.second)
+                            }
                             val deal = dealText(s)
                             if (deal != null) Text(deal.first, color = deal.second, style = MaterialTheme.typography.bodySmall)
                             if (s.multiBuy) {
@@ -319,11 +325,11 @@ fun ShopScreen() {
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        nm(c.cheaper) + " je lacnejšie o " + Calc.money(c.diff) + " / " + c.cheaper.uom.label + " (" + c.pct + " %)",
+                        nm(c.cheaper) + " je lacnejšie o " + Calc.money(c.diff) + " / " + c.unit + " (" + c.pct + " %)",
                         fontWeight = FontWeight.Medium, color = Pal.Green
                     )
-                    InfoRow(nm(c.cheaper), Calc.money(c.cheaper.effPrice()) + " / " + c.cheaper.uom.label)
-                    InfoRow(nm(c.dearer), Calc.money(c.dearer.effPrice()) + " / " + c.dearer.uom.label)
+                    InfoRow(nm(c.cheaper) + (if (c.cheaper.packSize > 0) " · " + c.cheaper.packText() else ""), Calc.money(c.cheaper.effPrice()) + " / " + c.cheaper.uom.label + (c.cheaper.perKgL()?.let { if (c.cheaper.packSize > 0) " (" + Calc.money(it.first) + " / " + it.second + ")" else "" } ?: ""))
+                    InfoRow(nm(c.dearer) + (if (c.dearer.packSize > 0) " · " + c.dearer.packText() else ""), Calc.money(c.dearer.effPrice()) + " / " + c.dearer.uom.label + (c.dearer.perKgL()?.let { if (c.dearer.packSize > 0) " (" + Calc.money(it.first) + " / " + it.second + ")" else "" } ?: ""))
                     Muted("Ponechať obe, alebo odstrániť drahšiu z nákupného zoznamu?")
                 }
             },
@@ -363,6 +369,21 @@ fun ShopScreen() {
         var uomIdx by remember(e.id) { mutableStateOf(e.uom.ordinal) }
         var until by remember(e.id) { mutableStateOf(e.dealUntil) }
         var note by remember(e.id) { mutableStateOf(e.note) }
+        val packUnits = listOf("g", "kg", "ml", "l")
+        var packIdx by remember(e.id) {
+            mutableStateOf(
+                when {
+                    e.packSize <= 0 -> if (e.packLiquid) 2 else 0
+                    e.packLiquid -> if (e.packSize >= 1000) 3 else 2
+                    else -> if (e.packSize >= 1000) 1 else 0
+                }
+            )
+        }
+        var packTxt by remember(e.id) {
+            mutableStateOf(
+                if (e.packSize <= 0) "" else Calc.edit(if (e.packSize >= 1000) e.packSize / 1000.0 else e.packSize)
+            )
+        }
         val multiOptions = listOf(
             "Bez množstvovej akcie", "1+1 zadarmo (kúp 2, zaplať 1)", "2+1 zadarmo (kúp 3, zaplať 2)",
             "3+1 zadarmo (kúp 4, zaplať 3)", "Vlastná…"
@@ -401,6 +422,12 @@ fun ShopScreen() {
                         val effUom = Kinds.fitUom(Uom.entries[uomIdx], liquidShop)
                         Picker("Jednotka", unitsShop.map { it.label }, unitsShop.indexOf(effUom).coerceAtLeast(0), { uomIdx = unitsShop[it].ordinal }, Modifier.weight(1f))
                     }
+                    if (Kinds.fitUom(Uom.entries[uomIdx], Kinds.isLiquid(name)).isCountable) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            NumField("Balenie", packTxt, { packTxt = it }, Modifier.weight(1f))
+                            Picker("Jednotka", packUnits, packIdx, { packIdx = it }, Modifier.weight(1f))
+                        }
+                    }
                     NumField("Cena za 1 jednotku (na regáli)", price, { price = it }, Modifier.fillMaxWidth(), suffix = "€")
                     Picker("Množstvová akcia", multiOptions, multiIdx, { multiIdx = it }, Modifier.fillMaxWidth())
                     if (multiIdx == 4) {
@@ -409,7 +436,7 @@ fun ShopScreen() {
                             NumField("Zaplatíš", payTxt, { payTxt = it }, Modifier.weight(1f))
                         }
                     }
-                    NumField("Bežná cena za jednotku (nepovinné)", regular, { regular = it }, Modifier.fillMaxWidth(), suffix = "€")
+                    NumField("Bežná cena (nepovinné)", regular, { regular = it }, Modifier.fillMaxWidth(), suffix = "€")
                     Picker("Obchod", storeOptions, storeIdx, { storeIdx = it }, Modifier.fillMaxWidth())
                     if (storeIdx == storeOptions.lastIndex) {
                         TextField2("Názov obchodu", customStore, { customStore = it }, Modifier.fillMaxWidth())
@@ -433,8 +460,13 @@ fun ShopScreen() {
                         else -> 0.0 to 0.0
                     }
                     val qtyNow = Calc.parse(qty) ?: e.qty
+                    val packNum = Calc.parse(packTxt) ?: 0.0
+                    val packBase = if (packNum > 0 && Kinds.fitUom(Uom.entries[uomIdx], Kinds.isLiquid(name)).isCountable) {
+                        if (packIdx == 1 || packIdx == 3) packNum * 1000 else packNum
+                    } else 0.0
                     val saved = e.copy(
                             buyQty = mb.first, payQty = mb.second,
+                            packSize = packBase, packLiquid = packBase > 0 && packIdx >= 2,
                             name = name.trim(), qty = if (mb.first > 1.0 && qtyNow < mb.first) mb.first else qtyNow,
                             uom = Kinds.fitUom(Uom.entries[uomIdx], Kinds.isLiquid(name)), price = Calc.parse(price) ?: 0.0,
                             regularPrice = Calc.parse(regular) ?: 0.0, store = storeName, dealUntil = until, note = note.trim()

@@ -44,7 +44,7 @@ object EmergencyShop {
         BasicNeed("Cukor", "Cukor", false, 30.0),
         BasicNeed("Orechy", "Orechy", false, 30.0),
         BasicNeed("Olej", "Olej", true, 30.0),
-        BasicNeed("Trvanlivé mlieko", "Mlieko", true, 200.0),
+        BasicNeed("Mlieko plnotučné", "Mlieko", true, 200.0),
         BasicNeed("Soľ", "", false, 5.0, listOf("sol"))
     )
 

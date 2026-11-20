@@ -104,7 +104,11 @@ object Prices {
     // ---------- porovnanie akcii ----------
 
     /** Dve akcie na ten isty produkt (z roznych obchodov); [cheaper] je lacnejsia, rozdiel je za jednotku polozky [cheaper]. */
-    data class DealCompare(val cheaper: ShopItem, val dearer: ShopItem, val diff: Double, val pct: Long)
+    data class DealCompare(
+        val cheaper: ShopItem, val dearer: ShopItem, val diff: Double, val pct: Long,
+        /** Jednotka, v ktorej je rozdiel (kg, l, alebo jednotka polozky). */
+        val unit: String
+    )
 
     private fun sameProduct(db: Db, a: ShopItem, b: ShopItem): Boolean {
         val ia = a.itemId?.let { id -> db.items.firstOrNull { it.id == id } }
@@ -121,12 +125,25 @@ object Prices {
         var best: DealCompare? = null
         for (o in db.shop) {
             if (o.id == s.id || o.effPrice() <= 0 || !sameProduct(db, s, o)) continue
-            val po = convertUnitPrice(o.effPrice(), o.uom, s.uom) ?: continue
-            val ps = s.effPrice()
+            // Ak je zadana velkost balenia pri oboch, porovnava sa cena za kg / l (150 g vs 250 g).
+            val ks = s.perKgL()
+            val ko = o.perKgL()
+            val ps: Double
+            val po: Double
+            val unit: String
+            if (ks != null && ko != null && ks.second == ko.second && (s.packSize > 0 || o.packSize > 0)) {
+                ps = ks.first
+                po = ko.first
+                unit = ks.second
+            } else {
+                ps = s.effPrice()
+                po = convertUnitPrice(o.effPrice(), o.uom, s.uom) ?: continue
+                unit = s.uom.label
+            }
             val diff = Math.abs(ps - po)
             if (diff < 0.004) continue
-            val cmp = if (ps < po) DealCompare(s, o, diff, Math.round(diff / po * 100))
-            else DealCompare(o, s, diff, Math.round(diff / ps * 100))
+            val cmp = if (ps < po) DealCompare(s, o, diff, Math.round(diff / po * 100), unit)
+            else DealCompare(o, s, diff, Math.round(diff / ps * 100), unit)
             val cur = best
             if (cur == null || cmp.pct > cur.pct) best = cmp
         }

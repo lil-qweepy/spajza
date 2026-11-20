@@ -40,6 +40,7 @@ object ShopPdf {
                     ), xs
                 )
                 val extra = ArrayList<String>()
+                if (s.packSize > 0 && s.uom.isCountable) extra.add("balenie " + s.packText())
                 if (s.multiBuy) extra.add("kúp " + Calc.num(s.buyQty, 1) + ", zaplať " + Calc.num(s.payQty, 1))
                 if (s.dealUntil != null) extra.add("akcia do " + Calc.date(s.dealUntil))
                 if (s.regularPrice > s.price && s.price > 0) extra.add("bežne " + Calc.money(s.regularPrice))
