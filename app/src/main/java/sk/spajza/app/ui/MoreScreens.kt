@@ -18,17 +18,14 @@ import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -58,10 +55,8 @@ fun MoreScreen() {
     val nav = LocalNav.current
     ScreenScaffold(title = "Viac") { pad ->
         PageList(pad) {
-            item { MenuRow(Icons.Filled.Receipt, "Pridať nákup z bločku", "Odfotíte bloček a položky sa pridajú") { nav.push(Dest.Receipt) } }
             item { MenuRow(Icons.Filled.Event, "Expirácia", "Čo sa kazí a kedy") { nav.push(Dest.Expiry) } }
             item { MenuRow(Icons.Filled.Shield, "Núdzové zásoby", "Na koľko dní vystačíte") { nav.push(Dest.Emergency) } }
-            item { MenuRow(Icons.Filled.Lightbulb, "Tipy a kontrolný zoznam", "Čo robiť v krízových situáciách") { nav.push(Dest.Tips) } }
             item { MenuRow(Icons.Filled.LocationOn, "Miesta, kategórie a druhy", "Chladnička, špajza, pivnica…") { nav.push(Dest.Lists) } }
             item { MenuRow(Icons.Filled.BarChart, "Štatistiky", "Hodnota zásob, plytvanie, spotreba") { nav.push(Dest.Stats) } }
             item { MenuRow(Icons.Filled.History, "História pohybov", "Všetko, čo ste pridali alebo odobrali") { nav.push(Dest.Moves) } }

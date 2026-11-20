@@ -85,7 +85,7 @@ fun ExpiryScreen() {
                             Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                                 Text(prod.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
                                 Muted(
-                                    Calc.qty(b.qty, prod.uom) +
+                                    Calc.qty(prod, b.qty) +
                                         (if (db.placeName(b.placeId).isNotBlank()) " · " + db.placeName(b.placeId) else "") +
                                         (if (b.expiry != null) " · " + Calc.date(b.expiry) else "") +
                                         (if (b.opened != null) " · otvorené" else "")

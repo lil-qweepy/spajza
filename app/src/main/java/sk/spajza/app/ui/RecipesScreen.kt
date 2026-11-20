@@ -187,7 +187,7 @@ fun RecipeDetailScreen(id: Long) {
                             Text(im.ing.name + (if (shown.isNotBlank()) " – " + shown else ""))
                             val s = im.stock
                             if (s != null) {
-                                Muted("Doma: " + s.item.name + " (" + Calc.qty(s.qty, s.item.uom) + ")")
+                                Muted("Doma: " + s.item.name + " (" + Calc.qty(s.item, s.qty) + ")")
                                 val need = im.need
                                 if (!im.enough && need != null) {
                                     val av = Amounts.available(im.all, need.unit) ?: 0.0
@@ -294,7 +294,7 @@ private fun CookDialog(m: RecipeMatch, recipeName: String, onDismiss: () -> Unit
                             Checkbox(checked = checked[idx] ?: true, onCheckedChange = { checked[idx] = it })
                             Column(Modifier.weight(1f)) {
                                 Text(s.item.name, maxLines = 1)
-                                Muted("Na sklade " + Calc.qty(s.qty, s.item.uom))
+                                Muted("Na sklade " + Calc.qty(s.item, s.qty))
                             }
                             NumField("", qtys[idx] ?: initial(im), { qtys[idx] = it }, Modifier.weight(0.7f), suffix = s.item.uom.label)
                         }
@@ -408,7 +408,7 @@ private fun AssignDialog(ing: Ingredient, onDismiss: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
                         onDismiss()
-                        nav.push(Dest.ItemEdit(0, name = kindName, kind = kindName))
+                        nav.push(Dest.QuickAdd(name = kindName, kind = kindName))
                     }
                 ) { Text("Pridať nový produkt: " + kindName) }
                 SearchField(q, { q = it }, Modifier.fillMaxWidth(), "Hľadať produkt v zásobách")

@@ -8,6 +8,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Checkbox
+import sk.spajza.app.data.Amounts
+import sk.spajza.app.data.Need
+import sk.spajza.app.data.Uom
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -33,6 +42,10 @@ import kotlinx.coroutines.launch
 import sk.spajza.app.data.Batch
 import sk.spajza.app.data.Calc
 import sk.spajza.app.data.Db
+import sk.spajza.app.data.PlaceType
+import sk.spajza.app.data.Shelf
+import sk.spajza.app.data.Prices
+import sk.spajza.app.data.Pairing
 import sk.spajza.app.data.Item
 import sk.spajza.app.data.MoveType
 import sk.spajza.app.data.OffResult
@@ -74,9 +87,12 @@ fun ItemDetailScreen(id: Long) {
     var deleteDialog by remember { mutableStateOf(false) }
     var editBatch by remember { mutableStateOf<Batch?>(null) }
     var moveBatch by remember { mutableStateOf<Batch?>(null) }
+    var thawBatch by remember { mutableStateOf<Batch?>(null) }
     var openBatch by remember { mutableStateOf<Batch?>(null) }
     var loading by remember { mutableStateOf(false) }
     var info by remember { mutableStateOf("") }
+    var pairDialog by remember { mutableStateOf(false) }
+    var pairQuery by remember { mutableStateOf("") }
 
     if (prod == null) {
         ScreenScaffold("Produkt", onBack = { nav.pop() }) { pad ->
@@ -107,9 +123,19 @@ fun ItemDetailScreen(id: Long) {
                     }
                 }
             }
+            if (prod.draft) {
+                item {
+                    SCard {
+                        Text("Chýbajú údaje", fontWeight = FontWeight.Medium)
+                        Muted("Produkt vznikol len z fotky pri skenovaní. Doplňte názov a ďalšie údaje.")
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { nav.push(Dest.ItemEdit(prod.id)) }) { Text("Doplniť údaje") }
+                    }
+                }
+            }
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    StatTile("na sklade", Calc.qty(stock.qty, prod.uom), modifier = Modifier.weight(1f))
+                    StatTile("na sklade", Calc.qty(prod, stock.qty), modifier = Modifier.weight(1f))
                     StatTile("hodnota", Calc.money(stock.value), Pal.Green, Modifier.weight(1f))
                 }
             }
@@ -118,6 +144,10 @@ fun ItemDetailScreen(id: Long) {
                     StatTile("kalórie", if (prod.kcal == null) "—" else Calc.kcalText(stock.kcal), modifier = Modifier.weight(1f))
                     StatTile("voda", if (prod.water) Calc.waterText(stock.waterMl) else "—", Pal.Blue, Modifier.weight(1f))
                 }
+            }
+            val totalText = Calc.total(prod, stock.qty)
+            if (totalText != null && stock.qty > 0) {
+                item { Muted("Spolu na sklade: " + totalText + " (1 " + prod.uom.label + " = " + Calc.num(prod.net, 1) + (if (prod.netLiquid) " ml" else " g") + ")") }
             }
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -133,6 +163,48 @@ fun ItemDetailScreen(id: Long) {
                     }, modifier = Modifier.weight(1f)) { Text("Nákup") }
                 }
                 if (info.isNotBlank()) Muted(info, Modifier.padding(top = 6.dp))
+            }
+            val pairMembers = Pairing.members(db, prod)
+            val pairCands = Pairing.candidates(db, prod)
+            if (pairMembers.size > 1) {
+                item {
+                    SCard {
+                        Text("Rovnaký produkt (spárované)", fontWeight = FontWeight.Medium)
+                        Muted("Zásoby, dochádzanie a nákupný zoznam ich berú ako jeden produkt.")
+                        for (m in pairMembers) {
+                            val q = db.batches.filter { it.itemId == m.id }.sumOf { it.qty }
+                            InfoRow(
+                                m.name + (if (m.brand.isNotBlank() && !m.name.contains(m.brand, ignoreCase = true)) " · " + m.brand else "") +
+                                    (if (m.id == prod.id) " (tento)" else ""),
+                                Calc.qty(m, q)
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            TextButton(onClick = { pairDialog = true }) { Text("Spárovať ďalší") }
+                            TextButton(onClick = { store.unpairItem(prod.id) }) { Text("Odpárovať tento") }
+                        }
+                    }
+                }
+            } else if (pairCands.isNotEmpty()) {
+                item {
+                    SCard {
+                        Text("Je to ten istý produkt?", fontWeight = FontWeight.Medium)
+                        Muted("Napr. mlieko z iného obchodu s iným EAN. Po spárovaní sa zásoby, dochádzanie a nákupný zoznam berú spolu.")
+                        for (c in pairCands.take(3)) {
+                            val q = db.batches.filter { it.itemId == c.id }.sumOf { it.qty }
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(c.name, style = MaterialTheme.typography.bodyMedium)
+                                    Muted(Calc.qty(c, q))
+                                }
+                                TextButton(onClick = { store.pairItems(prod.id, c.id) }) { Text("Spárovať") }
+                            }
+                        }
+                        TextButton(onClick = { pairDialog = true }) { Text("Iný produkt…") }
+                    }
+                }
+            } else if (db.items.size > 1) {
+                item { TextButton(onClick = { pairDialog = true }) { Text("Spárovať s rovnakým produktom z iného obchodu") } }
             }
             if (prod.kcal == null && prod.ean.length >= 8) {
                 item {
@@ -156,6 +228,16 @@ fun ItemDetailScreen(id: Long) {
                     }
                 }
             }
+            if (stock.batches.map { it.placeId }.distinct().size > 1) {
+                item {
+                    SCard {
+                        Text("Podľa miesta", fontWeight = FontWeight.Medium)
+                        for ((pid, bs) in stock.batches.groupBy { it.placeId }) {
+                            InfoRow(db.placeName(pid).ifBlank { "Bez miesta" }, Calc.qty(prod, bs.sumOf { it.qty }))
+                        }
+                    }
+                }
+            }
             item { SectionTitle("Šarže (podľa expirácie)") }
             if (stock.batches.isEmpty()) {
                 item { Muted("Nič nie je na sklade.") }
@@ -165,7 +247,7 @@ fun ItemDetailScreen(id: Long) {
                 SCard {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text(Calc.qty(b.qty, prod.uom), fontWeight = FontWeight.SemiBold)
+                            Text(Calc.qty(prod, b.qty), fontWeight = FontWeight.SemiBold)
                             Muted(
                                 "Kúpené " + Calc.date(b.bought) +
                                     (if (db.placeName(b.placeId).isNotBlank()) " · " + db.placeName(b.placeId) else "")
@@ -182,6 +264,9 @@ fun ItemDetailScreen(id: Long) {
                     }
                     if (b.opened == null) {
                         OutlinedButton(onClick = { openBatch = b }, modifier = Modifier.fillMaxWidth()) { Text("Otvoriť balenie") }
+                    }
+                    if (Shelf.typeOf(db.placeName(b.placeId)) == PlaceType.FREEZER) {
+                        OutlinedButton(onClick = { thawBatch = b }, modifier = Modifier.fillMaxWidth()) { Text("Rozmraziť") }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         TextButton(onClick = { editBatch = b }) { Text("Upraviť") }
@@ -205,6 +290,44 @@ fun ItemDetailScreen(id: Long) {
                     }
                 }
             }
+            val pricePts = Prices.forItem(db, prod.id, prod.name)
+            if (pricePts.isNotEmpty()) {
+                val pUnit = pricePts.first().baseUnit
+                val same = pricePts.filter { it.baseUnit == pUnit }
+                val byStore = Prices.latestByStore(same)
+                item { SectionTitle("História cien · cena za " + pUnit) }
+                item {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        StatTile("posledná", Calc.money(same.first().base), modifier = Modifier.weight(1f))
+                        StatTile("najnižšia", Calc.money(same.minOf { it.base }), Pal.Green, Modifier.weight(1f))
+                        StatTile("priemer", Calc.money(same.map { it.base }.average()), modifier = Modifier.weight(1f))
+                    }
+                }
+                if (byStore.isNotEmpty()) {
+                    item {
+                        SCard {
+                            Text("Podľa obchodov (posledná cena)", fontWeight = FontWeight.Medium)
+                            byStore.forEachIndexed { i, p ->
+                                InfoRow(
+                                    p.store + (if (i == 0 && byStore.size > 1) " – najlacnejšie" else ""),
+                                    Calc.money(p.base) + " · " + Calc.date(p.day)
+                                )
+                            }
+                        }
+                    }
+                }
+                item {
+                    SCard {
+                        Text("Posledné nákupy", fontWeight = FontWeight.Medium)
+                        for (p in same.take(8)) {
+                            InfoRow(
+                                Calc.date(p.day) + (if (p.store.isNotBlank()) " · " + p.store else "") + (if (p.deal) " · akcia" else ""),
+                                Calc.money(p.price) + " / " + p.uom.label
+                            )
+                        }
+                    }
+                }
+            }
             item { SectionTitle("Posledné pohyby") }
             if (moves.isEmpty()) item { Muted("Zatiaľ žiadne.") }
             items(moves.size) { idx ->
@@ -220,6 +343,29 @@ fun ItemDetailScreen(id: Long) {
         }
     }
 
+    if (pairDialog) {
+        val mine = Pairing.members(db, prod).map { it.id }.toSet()
+        val nq = Calc.norm(pairQuery.trim())
+        val list = db.items.filter { it.id !in mine && (nq.isEmpty() || Calc.norm(it.name + " " + it.brand).contains(nq)) }
+            .sortedBy { it.name.lowercase() }.take(15)
+        AlertDialog(
+            onDismissRequest = { pairDialog = false },
+            title = { Text("Spárovať s produktom") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SearchField(pairQuery, { pairQuery = it }, Modifier.fillMaxWidth())
+                    if (list.isEmpty()) Muted("Nič sa nenašlo.")
+                    for (c in list) {
+                        TextButton(onClick = { store.pairItems(prod.id, c.id); pairDialog = false; pairQuery = "" }) {
+                            Text(c.name + (if (c.brand.isNotBlank()) " · " + c.brand else ""))
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { pairDialog = false }) { Text("Zavrieť") } }
+        )
+    }
+
     if (addDialog) AddStockDialog(db, prod, onDismiss = { addDialog = false }) { q, ex, bought, place ->
         store.addStock(prod.id, q, ex, bought, place)
     }
@@ -231,7 +377,9 @@ fun ItemDetailScreen(id: Long) {
     val ob = openBatch
     if (ob != null) OpenPackDialog(prod, ob) { openBatch = null }
     val mb = moveBatch
-    if (mb != null) MoveDialog(db, prod, mb, onDismiss = { moveBatch = null }) { place, q -> store.moveBatch(mb.id, place, q) }
+    if (mb != null) MoveDialog(db, prod, mb, onDismiss = { moveBatch = null }) { place, q, exp, change -> store.moveBatch(mb.id, place, q, exp, change) }
+    val tb = thawBatch
+    if (tb != null) ThawDialog(db, prod, tb, onDismiss = { thawBatch = null }) { place, q, exp -> store.moveBatch(tb.id, place, q, exp, true) }
     if (deleteDialog) {
         ConfirmDialog(
             "Zmazať produkt?", "Produkt \"" + prod.name + "\" aj s celou históriou zásob sa natrvalo zmaže.",
@@ -250,7 +398,7 @@ private fun nutRow(label: String, v: Double?, unit: String) {
 
 @Composable
 fun AddStockDialog(db: Db, item: Item, onDismiss: () -> Unit, onOk: (Double, Long?, Long?, Long?) -> Unit) {
-    var qty by remember { mutableStateOf("1") }
+    var qty by remember { mutableStateOf(if (item.uom.isCountable) "1" else "") }
     var expiry by remember { mutableStateOf<Long?>(null) }
     var bought by remember { mutableStateOf<Long?>(Calc.today()) }
     var place by remember { mutableStateOf(placeIndex(db, item.placeId)) }
@@ -276,27 +424,86 @@ fun AddStockDialog(db: Db, item: Item, onDismiss: () -> Unit, onOk: (Double, Lon
     )
 }
 
+/** Jednotka, v ktorej sa zadava odobrane mnozstvo (g/ml sa prepocita na jednotku produktu). */
+private enum class UseUnit(val label: String) { NATIVE(""), G("g"), ML("ml") }
+
+private fun quickAmounts(unit: String): List<Double> = when (unit) {
+    "g" -> listOf(10.0, 50.0, 100.0, 250.0, 500.0)
+    "ml" -> listOf(50.0, 100.0, 250.0, 500.0)
+    "kg" -> listOf(0.25, 0.5, 1.0)
+    "l" -> listOf(0.25, 0.5, 1.0)
+    else -> listOf(1.0, 2.0, 3.0, 5.0)
+}
+
 @Composable
-fun UseDialog(item: Item, total: Double, onDismiss: () -> Unit, onOk: (Double, MoveType) -> Unit) {
-    var qty by remember { mutableStateOf("1") }
-    val types = listOf(MoveType.CONSUME, MoveType.DISCARD, MoveType.REMOVE)
-    var type by remember { mutableStateOf(0) }
-    val q = Calc.parse(qty)
+fun UseDialog(prod: Item, total: Double, onDismiss: () -> Unit, onOk: (Double, MoveType) -> Unit) {
+    // Co sa da odobrat v g/ml: sypke a tekute potraviny a balenia so znamym obsahom.
+    val alt: UseUnit? = when {
+        prod.uom == Uom.KG || (prod.uom.isCountable && prod.net > 0 && !prod.netLiquid) -> UseUnit.G
+        prod.uom == Uom.L || (prod.uom.isCountable && prod.net > 0 && prod.netLiquid) -> UseUnit.ML
+        else -> null
+    }
+    val native = prod.uom
+    val units: List<UseUnit> = if (alt == null) listOf(UseUnit.NATIVE) else if (native == Uom.G || native == Uom.ML) listOf(UseUnit.NATIVE) else listOf(alt, UseUnit.NATIVE)
+    var unit by remember { mutableStateOf(units.first()) }
+    var qty by remember { mutableStateOf(if (alt == null) "1" else "") }
+    val reasons = listOf(MoveType.CONSUME, MoveType.DISCARD, MoveType.REMOVE)
+    var reason by remember { mutableStateOf(0) }
+
+    val unitLabel = if (unit == UseUnit.NATIVE) native.label else unit.label
+    val typed = Calc.parse(qty)
+    val nativeQty: Double? = when {
+        typed == null || typed <= 0 -> null
+        unit == UseUnit.NATIVE -> typed
+        else -> Amounts.itemQty(prod, Need(typed, unit.label))
+    }
+    val tooMuch = nativeQty != null && nativeQty > total + 1e-9
+    val valid = nativeQty != null && !tooMuch
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Odobrať zo zásob") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                NumField(
-                    "Množstvo", qty, { qty = it }, Modifier.fillMaxWidth(), suffix = item.uom.label,
-                    supporting = "Na sklade " + Calc.qty(total, item.uom) + ". Berie sa najprv z najbližšej expirácie."
-                )
-                TextButton(onClick = { qty = Calc.edit(total) }) { Text("Všetko") }
-                Picker("Dôvod", types.map { it.label }, type, { type = it }, Modifier.fillMaxWidth())
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Muted(prod.name + " · na sklade " + Calc.qty(prod, total))
+                if (units.size > 1) {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(units.size) { idx ->
+                            val u = units[idx]
+                            FilterChip(
+                                selected = unit == u,
+                                onClick = { unit = u; qty = "" },
+                                label = { Text(if (u == UseUnit.NATIVE) native.label else u.label) }
+                            )
+                        }
+                    }
+                }
+                NumField("Koľko odobrať", qty, { qty = it }, Modifier.fillMaxWidth(), suffix = unitLabel)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val quick = quickAmounts(unitLabel)
+                    items(quick.size) { idx ->
+                        AssistChip(onClick = { qty = Calc.edit(quick[idx]) }, label = { Text(Calc.num(quick[idx], 2) + " " + unitLabel) })
+                    }
+                    item { AssistChip(onClick = { unit = UseUnit.NATIVE; qty = Calc.edit(total) }, label = { Text("Všetko") }) }
+                }
+                if (tooMuch) {
+                    Text("Na sklade je len " + Calc.qty(prod, total) + ".", color = Pal.Red)
+                } else if (nativeQty != null) {
+                    Muted("Zostane " + Calc.qty(prod, (total - nativeQty).coerceAtLeast(0.0)))
+                } else if (typed != null && typed > 0) {
+                    Muted("Tento produkt sa nedá prepočítať, zadajte množstvo v " + native.label + ".")
+                }
+                Text("Dôvod", style = MaterialTheme.typography.bodyMedium)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(reasons.size) { idx ->
+                        FilterChip(selected = reason == idx, onClick = { reason = idx }, label = { Text(reasons[idx].label) })
+                    }
+                }
+                Muted("Berie sa najprv z najbližšej expirácie.")
             }
         },
         confirmButton = {
-            TextButton(enabled = q != null && q > 0, onClick = { onOk(q ?: 0.0, types[type]); onDismiss() }) { Text("Odobrať") }
+            TextButton(enabled = valid, onClick = { onOk(nativeQty ?: 0.0, reasons[reason]); onDismiss() }) { Text("Odobrať") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Zrušiť") } }
     )
@@ -331,10 +538,16 @@ private fun EditBatchDialog(db: Db, item: Item, b: Batch, onDismiss: () -> Unit,
 }
 
 @Composable
-private fun MoveDialog(db: Db, item: Item, b: Batch, onDismiss: () -> Unit, onOk: (Long?, Double) -> Unit) {
+private fun MoveDialog(db: Db, item: Item, b: Batch, onDismiss: () -> Unit, onOk: (Long?, Double, Long?, Boolean) -> Unit) {
     var qty by remember { mutableStateOf(Calc.edit(b.qty)) }
     var place by remember { mutableStateOf(placeIndex(db, b.placeId)) }
+    var recalc by remember { mutableStateOf(true) }
     val q = Calc.parse(qty)
+    val fromType = Shelf.typeOf(db.placeName(b.placeId))
+    val toType = Shelf.typeOf(db.placeName(placeAt(db, place)))
+    // Balenia po otvoreni nechavame tak, ako su (expiracia sa riadi dnami po otvoreni).
+    val suggested: Long? = if (b.opened == null) Shelf.moveExpiry(b.expiry, Calc.today(), fromType, toType, item.category) else b.expiry
+    val offer = suggested != b.expiry
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Presunúť na iné miesto") },
@@ -342,10 +555,64 @@ private fun MoveDialog(db: Db, item: Item, b: Batch, onDismiss: () -> Unit, onOk
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 NumField("Koľko presunúť", qty, { qty = it }, Modifier.fillMaxWidth(), suffix = item.uom.label)
                 PlacePicker("Nové miesto", db, place, { place = it }, Modifier.fillMaxWidth())
+                if (offer) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = recalc, onCheckedChange = { recalc = it })
+                        Text(
+                            "Prepočítať expiráciu na " + Calc.date(suggested) +
+                                (if (b.expiry != null) " (bola " + Calc.date(b.expiry) + ")" else ""),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
-            TextButton(enabled = q != null && q > 0, onClick = { onOk(placeAt(db, place), q ?: 0.0); onDismiss() }) { Text("Presunúť") }
+            TextButton(enabled = q != null && q > 0, onClick = {
+                onOk(placeAt(db, place), q ?: 0.0, suggested, offer && recalc)
+                onDismiss()
+            }) { Text("Presunúť") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Zrušiť") } }
+    )
+}
+
+/** Rozmrazenie: presun z mrazicky (do chladnicky) a nastavenie datumu spotreby, aj vlastneho. */
+@Composable
+private fun ThawDialog(db: Db, item: Item, b: Batch, onDismiss: () -> Unit, onOk: (Long?, Double, Long?) -> Unit) {
+    val today = Calc.today()
+    val defaultDays = Shelf.thawDays(item.category)
+    var qty by remember { mutableStateOf(Calc.edit(b.qty)) }
+    val fridge = db.places.indexOfFirst { Shelf.typeOf(it.name) == PlaceType.FRIDGE }
+    var place by remember { mutableStateOf(if (fridge >= 0) fridge + 1 else 0) }
+    var expiry by remember { mutableStateOf<Long?>(today + defaultDays) }
+    val q = Calc.parse(qty)
+    val chips = listOf("Dnes" to 0, "Zajtra" to 1, "+2 dni" to 2, "+3 dni" to 3, "+5 dní" to 5)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rozmraziť") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                NumField("Koľko rozmraziť", qty, { qty = it }, Modifier.fillMaxWidth(), suffix = item.uom.label)
+                PlacePicker("Kam ho dáte", db, place, { place = it }, Modifier.fillMaxWidth())
+                DateField("Spotrebovať do", expiry, { expiry = it }, Modifier.fillMaxWidth())
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(chips.size) { idx ->
+                        FilterChip(
+                            selected = expiry == today + chips[idx].second,
+                            onClick = { expiry = today + chips[idx].second },
+                            label = { Text(chips[idx].first) }
+                        )
+                    }
+                }
+                Muted("Návrh: " + Shelf.describe(defaultDays) + " po rozmrazení. Rozmrazené potraviny nemrazte znova.")
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = q != null && q > 0 && placeAt(db, place) != b.placeId, onClick = {
+                onOk(placeAt(db, place), q ?: 0.0, expiry)
+                onDismiss()
+            }) { Text("Rozmraziť") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Zrušiť") } }
     )

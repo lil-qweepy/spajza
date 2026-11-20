@@ -124,13 +124,11 @@ object Notify {
         val low = ArrayList<String>()
         val lowIds = HashSet<Long>()
         if (s.notifyLow) {
-            val stock = db.items.map { i ->
-                i to db.batches.filter { it.itemId == i.id }.sumOf { it.qty }
-            }
-            for ((i, q) in stock) {
-                if (i.minQty > 0 && q <= i.minQty && !i.lowNotified) {
-                    low.add(i.name)
-                    lowIds.add(i.id)
+            // Rovnake produkty (napr. mlieko z Tesca aj z Lidla) sa hodnotia spolu ako jedna skupina.
+            for (g in sk.spajza.app.data.Pairing.lowGroups(db)) {
+                if (g.members.any { !it.item.lowNotified }) {
+                    low.add(if (g.grouped) g.name else g.primary.item.name)
+                    lowIds.addAll(g.ids)
                 }
             }
         }

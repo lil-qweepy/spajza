@@ -45,6 +45,8 @@ data class Item(
     val category: String = "Iné",
     /** Druh potraviny (napr. Múka) - podla neho recepty najdu surovinu. */
     val kind: String = "",
+    /** Nazov skupiny rovnakych produktov (napr. mlieko z Tesca a z Lidla); prazdne = nesparovany. */
+    val group: String = "",
     val image: String? = null,
     val uom: Uom = Uom.PCS,
     /** Obsah jedneho kusa/balenia v g alebo ml (0 = neznamy). */
@@ -71,6 +73,8 @@ data class Item(
     val openDays: Int = 0,
     /** Vyzivove hodnoty su len priemerny odhad (nie z obalu). */
     val nutriEstimate: Boolean = false,
+    /** Produkt vznikol len z fotky pri skenovani; udaje treba doplnit neskor. */
+    val draft: Boolean = false,
     val note: String = "",
     val created: Long = 0
 )
@@ -119,8 +123,60 @@ data class ShopItem(
     val uom: Uom = Uom.PCS,
     /** Cena za jednu jednotku (podla uom). */
     val price: Double = 0.0,
-    val checked: Boolean = false
+    val checked: Boolean = false,
+    /** Obchod, kde je polozka v akcii / kde ju chcete kupit (prazdne = lubovolny). */
+    val store: String = "",
+    /** Bezna cena za jednotku (na vypocet usetrenia pri akcii); 0 = neznama. */
+    val regularPrice: Double = 0.0,
+    /** Do kedy plati akcia (den od epochy); null = bez obmedzenia. */
+    val dealUntil: Long? = null,
+    val note: String = "",
+    /** Mnozstvova akcia "kup X, zaplat Y" (napr. 2 a 1); 0 = bez nej. */
+    val buyQty: Double = 0.0,
+    val payQty: Double = 0.0
+) {
+    val multiBuy: Boolean get() = buyQty > 1.0 && payQty > 0 && payQty < buyQty
+
+    /** Cena za cele mnozstvo s ohladom na akciu "kup X, zaplat Y". */
+    fun cost(): Double {
+        if (!multiBuy) return qty * price
+        val sets = Math.floor(qty / buyQty + 1e-9)
+        val rem = qty - sets * buyQty
+        return (sets * payQty + rem) * price
+    }
+
+    /** Skutocna cena za jednu jednotku po zapocitani akcie. */
+    fun effPrice(): Double = if (qty > 0) cost() / qty else price
+
+    /** Kolko sa usetri oproti bezne cene (alebo oproti cene bez mnozstvovej akcie). */
+    fun saving(): Double {
+        val full = (if (regularPrice > price) regularPrice else price) * qty
+        return Math.max(0.0, full - cost())
+    }
+}
+
+/** Zaznam o cene z nakupu (z nakupneho zoznamu); zaklad pre historiu cien, porovnanie obchodov a rozpocet. */
+@Serializable
+data class PricePoint(
+    val itemId: Long? = null,
+    val name: String,
+    val store: String = "",
+    /** Cena za jednu jednotku [uom]. */
+    val price: Double,
+    val uom: Uom,
+    val qty: Double,
+    /** Den nakupu (epoch day). */
+    val day: Long,
+    /** Cena prepocitana na kg, l alebo ks - na porovnanie roznych balenii. */
+    val base: Double,
+    val baseUnit: String,
+    val deal: Boolean = false
 )
+
+object Stores {
+    val DEFAULT = listOf("Lidl", "Kaufland", "Tesco", "Billa", "Coop Jednota", "Terno", "Fresh", "Metro", "dm", "Teta")
+    fun all(db: Db): List<String> = (DEFAULT + db.stores).distinct()
+}
 
 @Serializable
 data class Ingredient(
@@ -160,8 +216,9 @@ data class AppSettings(
     val notifyHour: Int = 8,
     val autoFetch: Boolean = true,
     val lastAutoFill: Long = 0,
-    val onboardingDone: Boolean = false,
-    val checked: Set<String> = emptySet()
+    val checked: Set<String> = emptySet(),
+    /** Mesacny rozpocet na nakupy v EUR; 0 = nesledovat. */
+    val monthlyBudget: Double = 0.0
 )
 
 @Serializable
@@ -174,6 +231,10 @@ data class Db(
     val kinds: List<String> = emptyList(),
     val moves: List<Move> = emptyList(),
     val shop: List<ShopItem> = emptyList(),
+    /** Vlastne obchody (okrem vstavanych v [Stores]). */
+    val stores: List<String> = emptyList(),
+    /** Historia cien z nakupov (najnovsie na konci). */
+    val prices: List<PricePoint> = emptyList(),
     /** Vlastne recepty pouzivatela (vstavane su v kode). */
     val recipes: List<Recipe> = emptyList(),
     val snaps: List<Snap> = emptyList(),

@@ -7,7 +7,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import sk.spajza.app.data.EmergencyShop
+import sk.spajza.app.data.ShopItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -39,12 +46,16 @@ fun EmergencyScreen() {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var pdfMsg by remember { mutableStateOf("") }
+    var basicsDialog by remember { mutableStateOf(false) }
+    var basicsDays by remember { mutableStateOf(0) }
+    var basicsOff by remember { mutableStateOf(setOf<String>()) }
+    var basicsMsg by remember { mutableStateOf("") }
     val pdfLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/pdf")
     ) { uri ->
         if (uri != null) {
             scope.launch {
-                val res = withContext(Dispatchers.IO) { EmergencyPdf.write(ctx, uri, db, Emergency.report(db), checklist) }
+                val res = withContext(Dispatchers.IO) { EmergencyPdf.write(ctx, uri, db, Emergency.report(db)) }
                 pdfMsg = if (res.isSuccess) "PDF uložené." else "Export zlyhal: " + (res.exceptionOrNull()?.message ?: "chyba")
             }
         }
@@ -57,6 +68,53 @@ fun EmergencyScreen() {
         r.days >= target -> Pal.Green
         r.days >= target / 2.0 -> Pal.Amber
         else -> Pal.Red
+    }
+
+    if (basicsDialog) {
+        val plan = EmergencyShop.plan(db, basicsDays)
+        val todo = plan.filter { it.buy > 0 && !it.onList }
+        val chosen = todo.filter { it.need.name !in basicsOff }
+        AlertDialog(
+            onDismissRequest = { basicsDialog = false },
+            title = { Text("Základné suroviny na nákup") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                        Text("Počet dní")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedButton(enabled = basicsDays > 1, onClick = { basicsDays-- }) { Text("−") }
+                            Text(basicsDays.toString(), modifier = Modifier.padding(horizontal = 14.dp), fontWeight = FontWeight.Bold)
+                            OutlinedButton(onClick = { basicsDays++ }) { Text("+") }
+                        }
+                    }
+                    Muted(s.persons.toString() + " " + daysText(s.persons.toDouble(), "osoba", "osoby", "osôb") + " × " + basicsDays + " dní, " + Calc.num(s.kcalPerDay) + " kcal a " + Calc.num(s.waterPerDayL, 1) + " l vody na osobu a deň")
+                    if (todo.isEmpty()) Muted("Na toto obdobie už máte všetko, alebo je to v nákupnom zozname.")
+                    for (l in todo) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = l.need.name !in basicsOff,
+                                onCheckedChange = { on -> basicsOff = if (on) basicsOff - l.need.name else basicsOff + l.need.name }
+                            )
+                            Column(Modifier.weight(1f)) {
+                                Text(l.need.name + " – kúpiť " + Calc.num(l.buyQty, 1) + " " + l.uom.label, fontWeight = FontWeight.Medium)
+                                Muted("treba " + (if (l.need.liquid) Calc.volumeText(l.required) else Calc.massText(l.required)) +
+                                    ", máte " + (if (l.need.liquid) Calc.volumeText(l.have) else Calc.massText(l.have)))
+                            }
+                        }
+                    }
+                    val skipped = plan.filter { it.onList && it.buy > 0 }
+                    if (skipped.isNotEmpty()) Muted("Už v zozname: " + skipped.joinToString(", ") { it.need.name })
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = chosen.isNotEmpty(), onClick = {
+                    for (l in chosen) store.saveShop(EmergencyShop.toShop(l, s.persons, basicsDays))
+                    basicsMsg = "Do nákupného zoznamu pridané: " + chosen.size
+                    basicsDialog = false
+                }) { Text("Pridať do zoznamu (" + chosen.size + ")") }
+            },
+            dismissButton = { TextButton(onClick = { basicsDialog = false }) { Text("Zrušiť") } }
+        )
     }
 
     ScreenScaffold(title = "Núdzové zásoby", onBack = { nav.pop() }) { pad ->
@@ -86,6 +144,16 @@ fun EmergencyScreen() {
                     if (r.missingKcal > 0) {
                         Muted("Pre orientáciu: 1 kg ryže alebo cestovín má okolo 3 500 kcal.")
                     }
+                }
+            }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Button(
+                        onClick = { basicsDays = s.targetDays; basicsOff = emptySet(); basicsDialog = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Nakúpiť základné suroviny") }
+                    Muted("Navrhne nákup surovín na " + s.targetDays + " dní pre " + s.persons + " " + daysText(s.persons.toDouble(), "osobu", "osoby", "osôb") + " podľa nastavenia nižšie.")
+                    if (basicsMsg.isNotBlank()) Muted(basicsMsg)
                 }
             }
             item {
@@ -149,7 +217,7 @@ fun EmergencyScreen() {
                         ItemThumb(x.item, 40.dp)
                         Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                             Text(x.item.name, maxLines = 1, fontWeight = FontWeight.Medium)
-                            Muted(Calc.qty(x.qty, x.item.uom))
+                            Muted(Calc.qty(x.item, x.qty))
                         }
                         Column(horizontalAlignment = Alignment.End) {
                             if (x.kcal > 0) Text(Calc.kcalText(x.kcal), style = MaterialTheme.typography.bodySmall)
@@ -160,9 +228,6 @@ fun EmergencyScreen() {
             }
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { nav.push(Dest.Tips) }, modifier = Modifier.fillMaxWidth()) {
-                        Text("Tipy a kontrolný zoznam pre krízové situácie")
-                    }
                     OutlinedButton(
                         onClick = { pdfLauncher.launch("nudzove-zasoby-" + java.time.LocalDate.now().toString() + ".pdf") },
                         modifier = Modifier.fillMaxWidth()

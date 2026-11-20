@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.OutlinedButton
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -49,7 +50,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -63,6 +63,7 @@ import com.google.mlkit.vision.common.InputImage
 import kotlinx.coroutines.launch
 import sk.spajza.app.data.Calc
 import sk.spajza.app.data.Db
+import sk.spajza.app.data.Ean
 import sk.spajza.app.data.Item
 import sk.spajza.app.data.OffProduct
 import sk.spajza.app.data.OffResult
@@ -71,6 +72,20 @@ import sk.spajza.app.data.Store
 import sk.spajza.app.data.buildStock
 import java.util.concurrent.Executors
 
+/** Odstrani polozku z hromadneho nakupu; produkt, ktory vznikol len z fotky a nema zasoby, sa zmaze. */
+private fun dropPending(store: Store, pending: MutableList<Pending>, idx: Int) {
+    if (idx !in pending.indices) return
+    val p = pending.removeAt(idx)
+    val d = store.db.value
+    val it0 = d.items.firstOrNull { x -> x.id == p.itemId }
+    if (it0 != null && it0.draft && d.batches.none { b -> b.itemId == it0.id }) store.deleteItem(it0.id)
+}
+
+private class Votes {
+    var code: String = ""
+    var n: Int = 0
+}
+
 private sealed class Phase {
     data object Idle : Phase()
     data class Looking(val ean: String) : Phase()
@@ -78,10 +93,9 @@ private sealed class Phase {
     data class Remote(val product: OffProduct) : Phase()
     data class Missing(val ean: String, val error: String?) : Phase()
     data class Take(val item: Item) : Phase()
+    data class Photo(val ean: String) : Phase()
     data class NotStocked(val ean: String) : Phase()
 }
-
-private data class Pending(val itemId: Long, val name: String, val qty: Double, val expiry: Long?)
 
 private fun findLocal(store: Store, ean: String): Item? {
     var r = store.findByEan(ean)
@@ -103,14 +117,14 @@ fun ScanScreen() {
     }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
 
+    val votes = remember { Votes() }
     var phase by remember { mutableStateOf<Phase>(Phase.Idle) }
     var lastCode by remember { mutableStateOf("") }
     var lastTime by remember { mutableStateOf(0L) }
     var manual by remember { mutableStateOf(false) }
     var removeMode by remember { mutableStateOf(false) }
-    var bulkMode by remember { mutableStateOf(false) }
-    var review by remember { mutableStateOf(false) }
-    val pending = remember { mutableStateListOf<Pending>() }
+    var bulkMode by remember { mutableStateOf(nav.bulkReview || nav.bulkPending.isNotEmpty()) }
+    val pending = nav.bulkPending
     var cameraError by remember { mutableStateOf("") }
     val session = remember { mutableStateListOf<String>() }
 
@@ -118,6 +132,40 @@ fun ScanScreen() {
         val idx = pending.indexOfFirst { it.itemId == id }
         if (idx >= 0) pending[idx] = pending[idx].copy(qty = pending[idx].qty + 1)
         else pending.add(Pending(id, name, 1.0, null))
+    }
+
+    var photoEan by remember { mutableStateOf<String?>(null) }
+    var photoItemId by remember { mutableStateOf(0L) }
+    val takePhoto = rememberProductCamera { img ->
+        val e = photoEan
+        val id = photoItemId
+        photoEan = null
+        photoItemId = 0L
+        if (id != 0L) {
+            // Hromadny rezim: produkt uz existuje (aby sa nepytal znova), fotka sa mu len pripoji.
+            if (img != null) {
+                store.db.value.items.firstOrNull { x -> x.id == id }?.let { cur -> store.saveItem(cur.copy(image = img)) }
+            }
+            phase = Phase.Idle
+            lastTime = System.currentTimeMillis()
+        } else if (e != null) {
+            phase = Phase.Local(store.saveDraft(e, img))
+        } else {
+            phase = Phase.Idle
+            lastTime = System.currentTimeMillis()
+        }
+    }
+
+    fun startPhoto(ean: String) {
+        if (bulkMode) {
+            // Produkt sa ulozi hned, takze dalsi naskenovany kus rovnakeho kodu uz fotku nepyta.
+            val draft = store.saveDraft(ean, null)
+            bulkAdd(draft.id, draft.name)
+            photoItemId = draft.id
+        }
+        photoEan = ean
+        phase = Phase.Photo(ean)
+        takePhoto()
     }
 
     fun handle(ean: String) {
@@ -142,8 +190,7 @@ fun ScanScreen() {
                         phase = Phase.Idle
                         lastTime = System.currentTimeMillis()
                     }
-                    is OffResult.NotFound -> phase = Phase.Missing(ean, null)
-                    is OffResult.Error -> phase = Phase.Missing(ean, r.message)
+                    is OffResult.NotFound, is OffResult.Error -> startPhoto(ean)
                 }
             }
             return
@@ -179,17 +226,26 @@ fun ScanScreen() {
             IconButton(onClick = { manual = true }) { Icon(Icons.Filled.Keyboard, contentDescription = "Zadať kód ručne") }
         }
     ) { pad ->
-        if (review) {
-            BackHandler { review = false }
-            BulkReview(pad, db, pending, onBack = { review = false }) { n ->
+        if (nav.bulkReview) {
+            BackHandler { nav.bulkReview = false }
+            BulkReview(pad, db, pending, onBack = { nav.bulkReview = false }) { n ->
                 session.add("Hromadne pridaných položiek: $n")
-                review = false
+                nav.bulkReview = false
             }
         } else
         Column(Modifier.fillMaxSize().padding(pad)) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 if (granted) {
-                    CameraPreview(onCode = { handle(it) }, onError = { cameraError = it })
+                    CameraPreview(onCode = { code ->
+                        // Kod sa prijme az ked ma spravnu kontrolnu cislicu a precita sa dvakrat po sebe.
+                        if (Ean.valid(code)) {
+                            if (code == votes.code) votes.n++ else { votes.code = code; votes.n = 1 }
+                            if (votes.n >= 2) {
+                                votes.n = 0
+                                handle(code)
+                            }
+                        }
+                    }, onError = { cameraError = it })
                     Box(
                         Modifier.width(280.dp).height(150.dp)
                             .border(BorderStroke(3.dp, Pal.Green), RoundedCornerShape(16.dp))
@@ -215,13 +271,31 @@ fun ScanScreen() {
                     FilterChip(selected = removeMode, onClick = { removeMode = true; bulkMode = false }, label = { Text("Odobrať") })
                 }
                 if (bulkMode) {
-                    Muted("Skenujte produkty jeden za druhým, rovnaký kód viackrát zvýši počet. Expiráciu a miesto nastavíte naraz na konci.")
-                    Button(enabled = pending.isNotEmpty(), onClick = { review = true }, modifier = Modifier.fillMaxWidth()) {
+                    Muted("Skenujte produkty jeden za druhým, rovnaký kód viackrát zvýši počet. Ak sa produkt nenájde, odfotí sa a údaje doplníte neskôr.")
+                    Button(enabled = pending.isNotEmpty(), onClick = { nav.bulkReview = true }, modifier = Modifier.fillMaxWidth()) {
                         Text("Dokončiť (" + pending.size + ")")
                     }
                 }
                 if (bulkMode && pending.isNotEmpty()) {
-                    for (p in pending.takeLast(4).reversed()) Muted("• " + p.name + " × " + Calc.num(p.qty))
+                    for (i in pending.indices.reversed().take(4)) {
+                        val p = pending[i]
+                        val live = db.items.firstOrNull { x -> x.id == p.itemId }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                (live?.name ?: p.name) + " × " + Calc.num(p.qty),
+                                style = MaterialTheme.typography.bodyMedium, maxLines = 1, modifier = Modifier.weight(1f)
+                            )
+                            if (p.qty > 1.0) {
+                                IconButton(onClick = { pending[i] = p.copy(qty = p.qty - 1) }) {
+                                    Icon(androidx.compose.material.icons.Icons.Filled.Remove, contentDescription = "Ubrať jeden kus")
+                                }
+                            }
+                            IconButton(onClick = { dropPending(store, pending, i) }) {
+                                Icon(androidx.compose.material.icons.Icons.Filled.Close, contentDescription = "Odstrániť z nákupu")
+                            }
+                        }
+                    }
+                    if (pending.size > 4) Muted("… a ďalších " + (pending.size - 4) + ". Všetky uvidíte po stlačení Dokončiť.")
                 } else if (session.isEmpty()) {
                     Muted(
                         if (removeMode) "Naskenujte produkt, ktorý ste spotrebovali alebo vyhodili."
@@ -240,7 +314,7 @@ fun ScanScreen() {
         is Phase.Local -> {
             AddStockDialog(db, p.item, onDismiss = { finish() }) { q, ex, bought, place ->
                 store.addStock(p.item.id, q, ex, bought, place)
-                session.add(p.item.name + " × " + Calc.qty(q, p.item.uom))
+                session.add(p.item.name + " × " + Calc.qty(p.item, q))
             }
         }
         is Phase.Remote -> {
@@ -248,7 +322,7 @@ fun ScanScreen() {
                 scope.launch {
                     val created = store.saveFromOff(p.product)
                     store.addStock(created.id, q, ex, Calc.today(), place)
-                    session.add(created.name + " × " + Calc.qty(q, created.uom))
+                    session.add(created.name + " × " + Calc.qty(created, q))
                 }
             }
         }
@@ -256,7 +330,7 @@ fun ScanScreen() {
             val total = buildStock(p.item, db.batches.filter { it.itemId == p.item.id && it.qty > 0 }).qty
             UseDialog(p.item, total, onDismiss = { finish() }) { q, type ->
                 val taken = store.withdraw(p.item.id, q, type)
-                session.add("− " + p.item.name + " × " + Calc.qty(taken, p.item.uom))
+                session.add("− " + p.item.name + " × " + Calc.qty(p.item, taken))
             }
         }
         is Phase.NotStocked -> {
@@ -272,16 +346,23 @@ fun ScanScreen() {
                 onDismissRequest = { finish() },
                 title = { Text(if (p.error == null) "Produkt sa nenašiel" else "Chyba pripojenia") },
                 text = {
-                    Text(
-                        if (p.error == null) "Kód " + p.ean + " nie je v databáze Open Food Facts. Môžete ho pridať ručne a zostane uložený vo vašej databáze."
-                        else "Nepodarilo sa spojiť s Open Food Facts (" + p.error + "). Produkt môžete pridať ručne alebo skúsiť znova."
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            if (p.error == null) "Kód " + p.ean + " nie je v databáze Open Food Facts. Môžete ho pridať ručne a zostane uložený vo vašej databáze."
+                            else "Nepodarilo sa spojiť s Open Food Facts (" + p.error + "). Produkt môžete pridať ručne alebo skúsiť znova."
+                        )
+                        if (!removeMode) {
+                            OutlinedButton(onClick = { startPhoto(p.ean) }, modifier = Modifier.fillMaxWidth()) {
+                                Text("Odfotiť a doplniť neskôr")
+                            }
+                        }
+                    }
                 },
                 confirmButton = {
                     TextButton(onClick = {
                         val e = p.ean
                         finish()
-                        nav.push(Dest.ItemEdit(0, ean = e))
+                        nav.push(Dest.QuickAdd(ean = e))
                     }) { Text("Vytvoriť ručne") }
                 },
                 dismissButton = {
@@ -305,10 +386,15 @@ fun ScanScreen() {
             onDismissRequest = { manual = false },
             title = { Text("Zadať čiarový kód") },
             text = {
-                TextField2("EAN", text, { text = it.filter { c -> c.isDigit() } }, Modifier.fillMaxWidth(), keyboard = KeyboardType.Number)
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TextField2("EAN", text, { text = it.filter { c -> c.isDigit() } }, Modifier.fillMaxWidth(), keyboard = KeyboardType.Number)
+                    if (text.length >= 8 && !Ean.valid(text)) {
+                        Text("Kód nemá správnu kontrolnú číslicu. Skontrolujte, či ste číslice prepísali dobre.", color = Pal.Red)
+                    }
+                }
             },
             confirmButton = {
-                TextButton(enabled = text.length >= 8, onClick = {
+                TextButton(enabled = Ean.valid(text), onClick = {
                     val e = text
                     manual = false
                     lastTime = 0L
@@ -355,7 +441,7 @@ private fun CameraPreview(onCode: (String) -> Unit, onError: (String) -> Unit) {
     val scanner = remember {
         BarcodeScanning.getClient(
             BarcodeScannerOptions.Builder()
-                .setBarcodeFormats(Barcode.FORMAT_EAN_13, Barcode.FORMAT_EAN_8, Barcode.FORMAT_UPC_A, Barcode.FORMAT_UPC_E)
+                .setBarcodeFormats(Barcode.FORMAT_EAN_13, Barcode.FORMAT_EAN_8, Barcode.FORMAT_UPC_A)
                 .build()
         )
     }
@@ -426,9 +512,19 @@ private fun BulkReview(
     onBack: () -> Unit,
     onDone: (Int) -> Unit
 ) {
+    val nav = LocalNav.current
     val store = LocalStore.current
     var place by remember { mutableStateOf(0) }
     var expiry by remember { mutableStateOf<Long?>(null) }
+    // Nazvy dopisane priamo v kontrole (pre produkty, ktore vznikli len z fotky).
+    val names = remember { androidx.compose.runtime.mutableStateMapOf<Long, String>() }
+
+    fun commitName(id: Long) {
+        val typed = names[id]?.trim().orEmpty()
+        val cur = db.items.firstOrNull { x -> x.id == id } ?: return
+        if (cur.draft && typed.isNotEmpty()) store.saveItem(cur.copy(name = typed, draft = false))
+    }
+
     PageList(pad) {
         item { SectionTitle("Kontrola nákupu (" + pending.size + ")") }
         item {
@@ -440,21 +536,36 @@ private fun BulkReview(
         }
         items(pending.size) { idx ->
             val p = pending[idx]
+            val it0 = db.items.firstOrNull { x -> x.id == p.itemId }
             SCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(p.name, Modifier.weight(1f), fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
-                    IconButton(onClick = { pending.removeAt(idx) }) {
+                    if (it0 != null) ItemThumb(it0, 56.dp)
+                    Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                        if (it0 != null && it0.draft) {
+                            TextField2("Názov produktu", names[p.itemId] ?: "", { v -> names[p.itemId] = v }, Modifier.fillMaxWidth())
+                        } else {
+                            Text(it0?.name ?: p.name, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                        }
+                        if (it0 != null && it0.ean.isNotBlank()) Muted("EAN " + it0.ean)
+                    }
+                    IconButton(onClick = { dropPending(store, pending, idx) }) {
                         Icon(androidx.compose.material.icons.Icons.Filled.Close, contentDescription = "Odstrániť")
                     }
                 }
                 var q by remember(p.itemId) { mutableStateOf(Calc.edit(p.qty)) }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top, modifier = Modifier.padding(top = 8.dp)) {
                     NumField("Počet", q, {
                         q = it
                         val v = Calc.parse(it)
                         if (v != null && v > 0 && idx < pending.size) pending[idx] = pending[idx].copy(qty = v)
-                    }, Modifier.weight(0.6f))
+                    }, Modifier.weight(0.6f), suffix = it0?.uom?.label)
                     DateField("Expirácia", p.expiry, { e -> if (idx < pending.size) pending[idx] = pending[idx].copy(expiry = e) }, Modifier.weight(1f))
+                }
+                if (it0 != null) {
+                    TextButton(onClick = {
+                        commitName(p.itemId)
+                        nav.push(Dest.ItemEdit(p.itemId))
+                    }) { Text(if (it0.draft) "Doplniť všetky údaje" else "Upraviť údaje") }
                 }
             }
         }
@@ -463,6 +574,7 @@ private fun BulkReview(
                 Button(enabled = pending.isNotEmpty(), modifier = Modifier.fillMaxWidth(), onClick = {
                     val today = Calc.today()
                     var n = 0
+                    for (p in pending.toList()) commitName(p.itemId)
                     for (p in pending.toList()) {
                         val it0 = db.items.firstOrNull { x -> x.id == p.itemId } ?: continue
                         val pl = if (place > 0) placeAt(db, place) else it0.placeId

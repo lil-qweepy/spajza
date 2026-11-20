@@ -1,6 +1,10 @@
 package sk.spajza.app.data
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.Uri
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,6 +30,11 @@ private val DEFAULT_PLACES: List<String> = listOf(
 /** Posledna zmena, ktoru je mozne vratit. */
 data class UndoInfo(val id: Long, val label: String, val snapshot: Db)
 
+/** Navrh pridat produkt do nakupneho zoznamu po spotrebe. */
+data class ShopSuggest(
+    val id: Long, val itemId: Long, val name: String, val qty: Double, val uom: Uom, val price: Double, val text: String
+)
+
 class Store(private val context: Context) {
     private val dir: File = context.filesDir
     private val file: File = File(dir, "data.json")
@@ -39,11 +48,73 @@ class Store(private val context: Context) {
         private set
 
     private val state = MutableStateFlow(load())
+
+    init {
+        // Starsie velke fotky sa jednorazovo zmensia na pozadi.
+        writer.execute {
+            imagesDir.listFiles()?.filter { it.isFile && it.length() > 500_000 }?.forEach { shrinkImage(it) }
+        }
+    }
     val db: StateFlow<Db> get() = state
 
     private val undoState = MutableStateFlow<UndoInfo?>(null)
     val undoInfo: StateFlow<UndoInfo?> get() = undoState
     private var undoSeq = 0L
+
+    private val suggestState = MutableStateFlow<ShopSuggest?>(null)
+    val shopSuggest: StateFlow<ShopSuggest?> get() = suggestState
+    private var suggestSeq = 0L
+
+    fun clearSuggest(id: Long) {
+        if (suggestState.value?.id == id) suggestState.value = null
+    }
+
+    fun acceptSuggest(s: ShopSuggest) {
+        saveShop(ShopItem(itemId = s.itemId, name = s.name, qty = s.qty, uom = s.uom, price = s.price))
+        clearSuggest(s.id)
+    }
+
+    /** Po spotrebe navrhne pridat do kosika produkt (skupinu rovnakych produktov), ktoremu dosla alebo cochadza zasoba. */
+    private fun suggestAfterConsume(itemIds: Collection<Long>) {
+        val d = state.value
+        val forecasts = Forecasts.soonOut(d).associateBy { it.group.key }
+        var best: ShopSuggest? = null
+        var bestDays = Double.MAX_VALUE
+        for (g in Pairing.groups(d)) {
+            if (g.ids.none { it in itemIds }) continue
+            if (Pairing.onShopList(d, g)) continue
+            val item = g.primary.item
+            val f = forecasts[g.key]
+            val empty = g.qty <= 1e-9
+            if (!empty && !g.low && f == null) continue
+            val days = if (empty) 0.0 else f?.daysLeft ?: Double.MAX_VALUE / 2
+            if (days >= bestDays) continue
+            val qty = f?.buy ?: Math.max(1.0, Math.ceil(g.minQty * 2 - g.qty))
+            val nm = if (g.grouped) g.name else item.name
+            val text = if (empty) nm + " došlo. Pridať do košíka?"
+            else nm + " dochádza" + (if (f != null) " (" + Forecasts.daysText(f.daysLeft) + ")" else "") + ". Pridať do košíka?"
+            suggestSeq++
+            best = ShopSuggest(suggestSeq, item.id, item.name, qty, item.uom, Calc.unitPrice(item), text)
+            bestDays = days
+        }
+        if (best != null) suggestState.value = best
+    }
+
+    /** Sparovanie rovnakych produktov (napr. mlieko z Tesca a z Lidla). */
+    fun pairItems(aId: Long, bId: Long) {
+        update { d ->
+            val a = d.items.firstOrNull { it.id == aId }
+            val b = d.items.firstOrNull { it.id == bId }
+            if (a == null || b == null || a.id == b.id) d else Pairing.pair(d, a, b).normalize()
+        }
+    }
+
+    fun unpairItem(id: Long) {
+        update { d ->
+            val a = d.items.firstOrNull { it.id == id }
+            if (a == null) d else Pairing.unpair(d, a).normalize()
+        }
+    }
 
     private fun <T> undoable(label: String, changed: (T) -> Boolean, block: () -> T): T {
         val snap = state.value
@@ -176,12 +247,24 @@ class Store(private val context: Context) {
     }
 
     /** Odobratie / spotreba / vyhodenie. Berie najprv z najskorsej expiracie. Vrati skutocne odobrate mnozstvo. */
-    fun withdraw(itemId: Long, qty: Double, type: MoveType, batchId: Long? = null, note: String = ""): Double =
-        undoable(if (type == MoveType.DISCARD) "Vyhodené" else "Odobraté zo zásob", { it > 0 }) {
-            withdrawNow(itemId, qty, type, batchId, note)
+    fun withdraw(itemId: Long, qty: Double, type: MoveType, batchId: Long? = null, note: String = ""): Double {
+        val r = undoable(if (type == MoveType.DISCARD) "Vyhodené" else "Odobraté zo zásob", { it > 0 }) {
+            withdrawNow(itemId, qty, type, batchId?.let { setOf(it) }, note)
         }
+        if (type == MoveType.CONSUME && r > 0) suggestAfterConsume(listOf(itemId))
+        return r
+    }
 
-    private fun withdrawNow(itemId: Long, qty: Double, type: MoveType, batchId: Long?, note: String): Double {
+    /** Odobere len zo zadanych sarzi (napr. len z chladnicky, nie z mrazicky). */
+    fun withdrawIn(itemId: Long, qty: Double, type: MoveType, batchIds: Collection<Long>, note: String = ""): Double {
+        val r = undoable(if (type == MoveType.DISCARD) "Vyhodené" else "Odobraté zo zásob", { it > 0 }) {
+            withdrawNow(itemId, qty, type, batchIds.toSet(), note)
+        }
+        if (type == MoveType.CONSUME && r > 0) suggestAfterConsume(listOf(itemId))
+        return r
+    }
+
+    private fun withdrawNow(itemId: Long, qty: Double, type: MoveType, batchIds: Set<Long>?, note: String): Double {
         var taken = 0.0
         update { d ->
             val item = d.items.firstOrNull { it.id == itemId }
@@ -191,7 +274,7 @@ class Store(private val context: Context) {
                 var remaining = qty
                 val left = HashMap<Long, Double>()
                 val src = d.batches
-                    .filter { it.itemId == itemId && (batchId == null || it.id == batchId) }
+                    .filter { it.itemId == itemId && (batchIds == null || it.id in batchIds) }
                     .sortedBy { it.expiry ?: Long.MAX_VALUE }
                 for (b in src) {
                     if (remaining <= 1e-9) break
@@ -284,14 +367,17 @@ class Store(private val context: Context) {
     }
 
     /** Odoberie viac produktov naraz (napr. po uvareni obeda) ako jednu zmenu, ktoru je mozne vratit. */
-    fun withdrawAll(entries: List<Pair<Long, Double>>, note: String): Int =
-        undoable<Int>("Suroviny odpočítané", { it > 0 }) {
+    fun withdrawAll(entries: List<Pair<Long, Double>>, note: String): Int {
+        val n = undoable<Int>("Suroviny odpočítané", { it > 0 }) {
             var n = 0
             for (e in entries) {
                 if (withdrawNow(e.first, e.second, MoveType.CONSUME, null, note) > 0) n++
             }
             n
         }
+        if (n > 0) suggestAfterConsume(entries.map { it.first })
+        return n
+    }
 
     /** Uprava udajov sarze (mnozstvo, datumy, miesto). */
     fun updateBatch(nb: Batch) {
@@ -310,7 +396,11 @@ class Store(private val context: Context) {
         }
     }
 
-    fun moveBatch(batchId: Long, toPlace: Long?, qty: Double) {
+    /**
+     * Presunie (cast) sarze na ine miesto. Ak changeExpiry = true, presunuta cast dostane expiraciu newExpiry
+     * (napr. po zmrazeni mesiace, po rozmrazeni dni).
+     */
+    fun moveBatch(batchId: Long, toPlace: Long?, qty: Double, newExpiry: Long? = null, changeExpiry: Boolean = false) {
         update { d ->
             val b = d.batches.firstOrNull { it.id == batchId }
             val item = if (b == null) null else d.items.firstOrNull { it.id == b.itemId }
@@ -319,21 +409,27 @@ class Store(private val context: Context) {
             } else {
                 val moved = minOf(qty, b.qty)
                 val left = b.qty - moved
+                val exp = if (changeExpiry) newExpiry else b.expiry
+                val expChanged = exp != b.expiry
                 val list = ArrayList<Batch>(d.batches.filter { it.id != b.id })
                 if (left > 1e-9) list.add(b.copy(qty = left))
                 var nid = d.nextId
                 val idx = list.indexOfFirst {
-                    it.itemId == b.itemId && it.expiry == b.expiry && it.placeId == toPlace && it.bought == b.bought &&
+                    it.itemId == b.itemId && it.expiry == exp && it.placeId == toPlace && it.bought == b.bought &&
                         it.opened == b.opened
                 }
                 if (idx >= 0) {
                     list[idx] = list[idx].copy(qty = list[idx].qty + moved)
                 } else {
-                    list.add(b.copy(id = nid, qty = moved, placeId = toPlace))
+                    list.add(b.copy(id = nid, qty = moved, placeId = toPlace, expiry = exp, notified = if (expChanged) 0 else b.notified))
                     nid++
                 }
                 d.copy(batches = list, nextId = nid)
-                    .addMove(item, MoveType.MOVE, moved, from = d.placeName(b.placeId), to = d.placeName(toPlace))
+                    .addMove(
+                        item, MoveType.MOVE, moved,
+                        note = if (expChanged) "Expirácia prepočítaná: " + Calc.date(exp) else "",
+                        from = d.placeName(b.placeId), to = d.placeName(toPlace)
+                    )
                     .normalize()
             }
         }
@@ -413,11 +509,15 @@ class Store(private val context: Context) {
 
     // ---------- nakupny zoznam ----------
 
-    fun saveShop(s: ShopItem) {
-        update { d ->
+    fun saveShop(s: ShopItem): Long {
+        val newId = state.value.nextId
+        update { d0 ->
+            val st = s.store.trim()
+            val d = if (st.isNotEmpty() && Stores.all(d0).none { it.equals(st, ignoreCase = true) }) d0.copy(stores = d0.stores + st) else d0
             if (s.id == 0L) d.copy(shop = d.shop + s.copy(id = d.nextId), nextId = d.nextId + 1)
             else d.copy(shop = d.shop.map { if (it.id == s.id) s else it })
         }
+        return if (s.id == 0L) newId else s.id
     }
 
     fun deleteShop(id: Long) {
@@ -439,19 +539,20 @@ class Store(private val context: Context) {
             count = checked.size
             val today = Calc.today()
             for (s in checked) {
+                val eff = s.effPrice()
                 val existing = s.itemId?.let { id -> x.items.firstOrNull { it.id == id } }
                     ?: x.items.firstOrNull { it.name.equals(s.name, ignoreCase = true) }
                 val item: Item
                 if (existing == null) {
-                    val bp = Calc.basisFor(s.uom, s.price)
+                    val bp = Calc.basisFor(s.uom, eff)
                     val created = Item(
                         id = x.nextId, name = s.name, uom = s.uom, price = bp.second, basis = bp.first,
                         created = System.currentTimeMillis()
                     )
                     x = x.copy(items = x.items + created, nextId = x.nextId + 1)
                     item = created
-                } else if (s.price > 0 && existing.uom == s.uom) {
-                    val bp = Calc.basisFor(s.uom, s.price)
+                } else if (eff > 0 && existing.uom == s.uom) {
+                    val bp = Calc.basisFor(s.uom, eff)
                     val upd = existing.copy(price = bp.second, basis = bp.first)
                     x = x.copy(items = x.items.map { if (it.id == upd.id) upd else it })
                     item = upd
@@ -461,6 +562,15 @@ class Store(private val context: Context) {
                 val qty = convertQty(s.qty, s.uom, item.uom)
                 val place = item.placeId ?: x.places.firstOrNull()?.id
                 x = x.addStockPure(item.id, qty, null, today, place, "Z nákupného zoznamu")
+                if (eff > 0) {
+                    val b = Prices.base(item, s.uom, eff)
+                    val pp = PricePoint(
+                        itemId = item.id, name = item.name, store = s.store, price = eff, uom = s.uom, qty = s.qty,
+                        day = today, base = b.first, baseUnit = b.second,
+                        deal = s.dealUntil != null || s.regularPrice > s.price || s.multiBuy
+                    )
+                    x = x.copy(prices = (x.prices + pp).takeLast(3000))
+                }
             }
             x.copy(shop = x.shop.filter { s -> checked.none { it.id == s.id } }).normalize()
         }
@@ -490,6 +600,44 @@ class Store(private val context: Context) {
 
     fun newImageFile(): File = File(imagesDir, "img_" + UUID.randomUUID() + ".jpg")
 
+    /** Zmensi velku fotku (dlhsia strana max. 1200 px, JPEG 85 %) a zohladni jej otocenie. Pri chybe ostane povodny subor. */
+    fun shrinkImage(f: File, maxSide: Int = 1200) {
+        try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(f.absolutePath, bounds)
+            val w = bounds.outWidth
+            val h = bounds.outHeight
+            if (w <= 0 || h <= 0) return
+            var sample = 1
+            while (maxOf(w, h) / (sample * 2) >= maxSide) sample *= 2
+            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+            val raw = BitmapFactory.decodeFile(f.absolutePath, opts) ?: return
+            val orientation = ExifInterface(f.absolutePath).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+            val degrees = when (orientation) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                else -> 0f
+            }
+            val scale = minOf(1f, maxSide.toFloat() / maxOf(raw.width, raw.height))
+            val out: Bitmap = if (scale < 1f || degrees != 0f) {
+                val m = Matrix()
+                if (scale < 1f) m.postScale(scale, scale)
+                if (degrees != 0f) m.postRotate(degrees)
+                Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, m, true)
+            } else {
+                raw
+            }
+            val tmp = File(f.parentFile, f.name + ".tmp")
+            tmp.outputStream().use { out.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+            if (out !== raw) out.recycle()
+            raw.recycle()
+            if (tmp.length() > 0 && tmp.renameTo(f).not()) tmp.delete()
+        } catch (e: Throwable) {
+            Log.w("Store", "Zmensenie fotky zlyhalo", e)
+        }
+    }
+
     fun imageFile(name: String?): File? {
         if (name == null) return null
         val f = File(imagesDir, name)
@@ -502,7 +650,12 @@ class Store(private val context: Context) {
         context.contentResolver.openInputStream(uri)?.use { input ->
             f.outputStream().use { input.copyTo(it) }
         }
-        if (f.length() > 0) f.name else null
+        if (f.length() > 0) {
+            shrinkImage(f)
+            f.name
+        } else {
+            null
+        }
     } catch (e: Exception) {
         null
     }
@@ -531,6 +684,20 @@ class Store(private val context: Context) {
             )
             saved = item
             d.copy(items = d.items + item, categories = cats, nextId = d.nextId + 1)
+        }
+        return saved!!
+    }
+
+    /** Ulozi nenajdeny produkt len s kodom a fotkou; udaje sa doplnia neskor (draft). */
+    fun saveDraft(ean: String, image: String?): Item {
+        var saved: Item? = null
+        update { d ->
+            val item = Item(
+                id = d.nextId, ean = ean, name = "Nový produkt " + ean, image = image,
+                draft = true, created = System.currentTimeMillis()
+            )
+            saved = item
+            d.copy(items = d.items + item, nextId = d.nextId + 1)
         }
         return saved!!
     }
@@ -640,12 +807,9 @@ private fun Db.addStockPure(
 
 /** Upratanie po zmene: prazdne sarze, znacky nizkych zasob a denny snimok hodnoty zasob. */
 private fun Db.normalize(): Db {
-    val totals = HashMap<Long, Double>()
-    for (b in batches) totals[b.itemId] = (totals[b.itemId] ?: 0.0) + b.qty
+    val lowIds = Pairing.lowIds(this)
     val fixed = items.map { i ->
-        val q = totals[i.id] ?: 0.0
-        val low = i.minQty > 0 && q <= i.minQty
-        if (!low && i.lowNotified) i.copy(lowNotified = false) else i
+        if (i.id !in lowIds && i.lowNotified) i.copy(lowNotified = false) else i
     }
     val byId = fixed.associateBy { it.id }
     val bs = batches.filter { it.qty > 1e-9 && byId.containsKey(it.itemId) }

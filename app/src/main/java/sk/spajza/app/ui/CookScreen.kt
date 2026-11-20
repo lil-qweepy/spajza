@@ -136,7 +136,7 @@ fun CookScreen() {
                             ItemThumb(s.item, 40.dp)
                             Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                                 Text(s.item.name, fontWeight = FontWeight.Medium, maxLines = 1)
-                                Muted("Na sklade " + Calc.qty(s.qty, s.item.uom))
+                                Muted("Na sklade " + Calc.qty(s.item, s.qty))
                             }
                             IconButton(onClick = { lines.removeAt(idx) }) { Icon(Icons.Filled.Close, contentDescription = "Odstrániť") }
                         }
@@ -151,7 +151,7 @@ fun CookScreen() {
                             TextButton(onClick = { lines[idx] = ln.copy(qty = Calc.edit(r3(s.qty))) }) { Text("Všetko") }
                         }
                         if (cur > s.qty + 1e-9) {
-                            Text("Máte len " + Calc.qty(s.qty, s.item.uom) + ", odpočíta sa maximum.", color = Pal.Amber)
+                            Text("Máte len " + Calc.qty(s.item, s.qty) + ", odpočíta sa maximum.", color = Pal.Amber)
                         }
                     }
                 }
@@ -173,7 +173,7 @@ fun CookScreen() {
                                 ItemThumb(s.item, 40.dp)
                                 Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                                     Text(s.item.name, fontWeight = FontWeight.Medium, maxLines = 1)
-                                    Muted("Na sklade " + Calc.qty(s.qty, s.item.uom))
+                                    Muted("Na sklade " + Calc.qty(s.item, s.qty))
                                 }
                                 if (s.batches.any { it.opened != null }) Pill("otvorené", Pal.Amber) else ExpiryBadge(s.nearest)
                             }

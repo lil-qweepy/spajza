@@ -9,7 +9,29 @@ import android.net.Uri
 /** Vytvori PDF s prehladom nudzovych zasob a kontrolnym zoznamom (na vytlacenie). */
 object EmergencyPdf {
 
-    private class Writer(val doc: PdfDocument) {
+    /** Kontrolny zoznam pre krizove situacie (tlaci sa do PDF). */
+    private val checklist = listOf(
+        "Pitná voda (2 l na osobu a deň)",
+        "Trvanlivé potraviny a konzervy",
+        "Otvárač konzerv",
+        "Varič a palivo (používať len vonku)",
+        "Baterky a náhradné batérie",
+        "Powerbanka a nabíjačky",
+        "Rádio na batérie alebo kľučku",
+        "Lekárnička a osobné lieky",
+        "Vlhčené utierky, toaletný papier, mydlo",
+        "Odpadkové vrecia",
+        "Zápalky alebo zapaľovač",
+        "Spacie vrecia a deky",
+        "Hotovosť v menších bankovkách",
+        "Kópie dokladov a zoznam kontaktov",
+        "Dezinfekčné tablety na vodu",
+        "Multifunkčný nôž a píšťalka",
+        "Detektor oxidu uhoľnatého",
+        "Pohotovostný batoh"
+    )
+
+    internal class Writer(val doc: PdfDocument) {
         val w = 595
         val h = 842
         val margin = 40f
@@ -73,7 +95,7 @@ object EmergencyPdf {
         }
     }
 
-    fun write(context: Context, uri: Uri, db: Db, r: EmergencyReport, checklist: List<String>): Result<Unit> = try {
+    fun write(context: Context, uri: Uri, db: Db, r: EmergencyReport): Result<Unit> = try {
         val doc = PdfDocument()
         val wr = Writer(doc)
         wr.newPage()
@@ -99,7 +121,7 @@ object EmergencyPdf {
         for (c in sorted) {
             wr.row(
                 listOf(
-                    c.item.name, Calc.qty(c.qty, c.item.uom),
+                    c.item.name, Calc.qty(c.item, c.qty),
                     if (c.kcal > 0) Calc.kcalText(c.kcal) else "-",
                     if (c.waterMl > 0) Calc.waterText(c.waterMl) else "-"
                 ), xs

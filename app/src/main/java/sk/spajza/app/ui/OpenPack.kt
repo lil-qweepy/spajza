@@ -52,7 +52,7 @@ fun OpenPackDialog(item: Item, batch: Batch, onDismiss: () -> Unit) {
         title = { Text("Otvoriť balenie") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Muted(item.name + " · na sklade " + Calc.qty(batch.qty, item.uom))
+                Muted(item.name + " · na sklade " + Calc.qty(item, batch.qty))
                 NumField("Koľko otvárate", amount, { amount = it }, Modifier.fillMaxWidth(), suffix = item.uom.label)
                 Text("Koľko z otvoreného zostalo", style = MaterialTheme.typography.bodyMedium)
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

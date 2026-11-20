@@ -6,7 +6,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -36,6 +38,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import sk.spajza.app.data.Calc
+import sk.spajza.app.data.Ean
 import sk.spajza.app.data.Estimate
 import sk.spajza.app.data.Item
 import sk.spajza.app.data.Kinds
@@ -51,13 +54,18 @@ import sk.spajza.app.data.Uom
 @Composable
 fun ItemEditScreen(d: Dest.ItemEdit) {
     val nav = LocalNav.current
+    if (d.id == 0L) {
+        // Novy produkt sa pridava len v jednotnom formulari QuickAdd.
+        LaunchedEffect(Unit) { nav.replace(Dest.QuickAdd(ean = d.ean, name = d.name, kind = d.kind)) }
+        return
+    }
     val store = LocalStore.current
     val db = useDb()
     val scope = rememberCoroutineScope()
     val existing = if (d.id == 0L) null else db.items.firstOrNull { it.id == d.id }
     val isNew = existing == null
 
-    var name by remember { mutableStateOf(existing?.name ?: d.name) }
+    var name by remember { mutableStateOf(if (existing == null) d.name else if (existing.draft) "" else existing.name) }
     var brand by remember { mutableStateOf(existing?.brand ?: "") }
     var manu by remember { mutableStateOf(existing?.manufacturer ?: "") }
     var ean by remember { mutableStateOf(existing?.ean ?: d.ean) }
@@ -96,7 +104,6 @@ fun ItemEditScreen(d: Dest.ItemEdit) {
 
     var initQty by remember { mutableStateOf("1") }
     var initExpiry by remember { mutableStateOf<Long?>(null) }
-    var initPlace by remember { mutableStateOf(0) }
     var addInitial by remember { mutableStateOf(true) }
 
     var catTouched by remember { mutableStateOf(false) }
@@ -104,6 +111,7 @@ fun ItemEditScreen(d: Dest.ItemEdit) {
     var msg by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
 
+    val shootProduct = rememberProductCamera { n -> if (n != null) image = n }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
             val n = store.importImage(uri)
@@ -286,7 +294,7 @@ fun ItemEditScreen(d: Dest.ItemEdit) {
         }
         val base = existing ?: Item(name = name.trim())
         val item = base.copy(
-            name = name.trim(), brand = brand.trim(), manufacturer = manu.trim(), ean = ean.trim(),
+            draft = false, name = name.trim(), brand = brand.trim(), manufacturer = manu.trim(), ean = ean.trim(),
             category = db.categories.getOrElse(catIdx) { "Iné" },
             kind = kind.trim().ifEmpty { Kinds.guess(name + " " + brand) }, image = image, uom = uom,
             net = if (uom.isCountable) (Calc.parse(net) ?: 0.0) else 0.0, netLiquid = liquid,
@@ -301,7 +309,7 @@ fun ItemEditScreen(d: Dest.ItemEdit) {
         if (isNew) {
             val q = Calc.parse(initQty) ?: 0.0
             if (addInitial && q > 0) {
-                store.addStock(id, q, initExpiry, Calc.today(), placeAt(db, if (initPlace == 0) placeIdx else initPlace))
+                store.addStock(id, q, initExpiry, Calc.today(), placeAt(db, placeIdx))
             }
             nav.replace(Dest.ItemDetail(id))
         } else {
@@ -311,112 +319,60 @@ fun ItemEditScreen(d: Dest.ItemEdit) {
 
     ScreenScaffold(
         title = if (isNew) "Nový produkt" else "Upraviť produkt",
-        onBack = { nav.pop() }
+        onBack = { nav.pop() },
+        floating = {
+            ExtendedFloatingActionButton(onClick = { save() }) { Text("Uložiť") }
+        }
     ) { pad ->
         FormPage(pad) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                ItemThumb(Item(name = name.ifBlank { "?" }, image = image), 72.dp)
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    OutlinedButton(onClick = { picker.launch("image/*") }) { Text("Vybrať fotku") }
-                    if (image != null) OutlinedButton(onClick = { image = null }) { Text("Odstrániť fotku") }
-                }
-            }
-            TextField2("Názov", name, { name = it }, Modifier.fillMaxWidth())
-            TextField2("Značka", brand, { brand = it }, Modifier.fillMaxWidth())
-            TextField2("Výrobca", manu, { manu = it }, Modifier.fillMaxWidth())
-            TextField2("Čiarový kód (EAN)", ean, { ean = it.filter { c -> c.isDigit() } }, Modifier.fillMaxWidth(), keyboard = KeyboardType.Number)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(enabled = !loading && ean.length >= 8, onClick = { lookup() }) {
-                    Text(if (loading) "Sťahujem…" else "Doplniť z internetu")
-                }
-            }
-            OutlinedButton(onClick = { openSearch() }) { Text("Hľadať výživové údaje podľa názvu") }
             if (msg.isNotBlank()) Muted(msg)
             if (error.isNotBlank()) Text(error, color = Pal.Red)
 
+            // ---- 1. Co je to ----
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                ItemThumb(Item(name = name.ifBlank { "?" }, image = image), if (existing?.draft == true) 112.dp else 72.dp)
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { shootProduct() }) { Text("Odfotiť") }
+                        OutlinedButton(onClick = { picker.launch("image/*") }) { Text("Z galérie") }
+                    }
+                    if (image != null) TextButton(onClick = { image = null }) { Text("Odstrániť fotku") }
+                }
+            }
+            TextField2("Názov", name, { name = it }, Modifier.fillMaxWidth())
             val kindList = (Kinds.names + db.kinds + (if (kind.isNotBlank()) listOf(kind) else emptyList())).distinct()
-            Picker("Druh potraviny (pre recepty)", listOf("Podľa názvu") + kindList, if (kind.isBlank()) 0 else kindList.indexOf(kind) + 1, { kind = if (it == 0) "" else kindList[it - 1] }, Modifier.fillMaxWidth())
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Top) {
+                Picker("Druh (pre recepty)", listOf("Podľa názvu") + kindList, if (kind.isBlank()) 0 else kindList.indexOf(kind) + 1, { kind = if (it == 0) "" else kindList[it - 1] }, Modifier.weight(1f))
+                Picker("Kategória", db.categories, catIdx, { catIdx = it; catTouched = true }, Modifier.weight(1f))
+            }
             if (kind.isBlank() && name.isNotBlank()) {
                 val g = Kinds.guess(name + " " + brand)
                 Muted(if (g.isNotBlank()) "Rozpoznané ako: " + g else "Druh sa nerozpoznal, recepty ho nájdu podľa názvu.")
             }
-            Picker("Kategória", db.categories, catIdx, { catIdx = it; catTouched = true }, Modifier.fillMaxWidth())
+
+            // ---- 2. Balenie a mnozstvo ----
+            SectionTitle("Balenie")
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Top) {
+                Picker(
+                    "Skupenstvo", listOf("Tuhá (g, kg)", "Tekutina (ml, l)"), if (liquid) 1 else 0,
+                    { liquidTouched = true; setLiquid(it == 1) }, Modifier.weight(1f)
+                )
+                val unitList = Kinds.uomsFor(liquid)
+                Picker(
+                    "Jednotka", unitList.map { it.label }, unitList.indexOf(uom).coerceAtLeast(0),
+                    { uomIdx = unitList[it].ordinal }, Modifier.weight(1f)
+                )
+            }
+            if (uom.isCountable) {
+                NumField(
+                    "Obsah jedného kusa", net, { net = it }, Modifier.fillMaxWidth(), suffix = if (liquid) "ml" else "g",
+                    supporting = "Potrebné na výpočet kalórií, vody a ceny. Umožní odoberať po gramoch/mililitroch."
+                )
+            }
             PlacePicker("Miesto uloženia", db, placeIdx, { placeIdx = it }, Modifier.fillMaxWidth())
 
-            SectionTitle("Množstvo a cena")
-            Picker(
-                "Skupenstvo", listOf("Tuhá potravina (g, kg)", "Tekutina (ml, l)"), if (liquid) 1 else 0,
-                { liquidTouched = true; setLiquid(it == 1) }, Modifier.fillMaxWidth()
-            )
-            val unitList = Kinds.uomsFor(liquid)
-            Picker(
-                "Jednotka", unitList.map { it.label + " (" + it.longName + ")" }, unitList.indexOf(uom).coerceAtLeast(0),
-                { uomIdx = unitList[it].ordinal }, Modifier.fillMaxWidth()
-            )
-            if (uom.isCountable) {
-                NumField("Obsah jedného kusa", net, { net = it }, Modifier.fillMaxWidth(), suffix = if (liquid) "ml" else "g")
-                Muted("Obsah je potrebný na výpočet kalórií, vody a ceny za kg/l.")
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Top) {
-                NumField("Cena", price, { price = it }, Modifier.weight(1f), suffix = "€")
-                Picker("Cena je", PriceBasis.entries.map { it.label }, basisIdx, { basisIdx = it }, Modifier.weight(1f))
-            }
-            NumField("Minimálna zásoba (upozornenie)", minQty, { minQty = it }, Modifier.fillMaxWidth(), suffix = uom.label)
-            val guessOpen = Kinds.openDays(Item(name = name, brand = brand, kind = kind, category = db.categories.getOrElse(catIdx) { "Iné" }))
-            NumField(
-                "Trvanlivosť po otvorení", openDaysText, { openDaysText = it.filter { c -> c.isDigit() } }, Modifier.fillMaxWidth(),
-                suffix = "dní", supporting = "Prázdne = odhad podľa druhu (" + guessOpen + " dní)"
-            )
-
-            SectionTitle("Výživové hodnoty na 100 " + (if (liquid) "ml" else "g"))
-            val est = remember(kind, name, brand) { Nutri.estimate(kind, name + " " + brand) }
-            if (est != null && kcal.isBlank()) {
-                SCard {
-                    Text("Nemáte údaje z obalu? Použite priemerné hodnoty", fontWeight = FontWeight.Medium)
-                    Muted(est.title + " (odhad): " + est.summary())
-                    OutlinedButton(onClick = { applyEstimate(est) }) { Text("Použiť odhad") }
-                }
-            }
-            if (estApplied && kcal.isNotBlank()) Muted("Hodnoty sú len priemerný odhad.")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(enabled = !ocrBusy, onClick = {
-                    if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) launchCamera()
-                    else camPermission.launch(Manifest.permission.CAMERA)
-                }) { Text(if (ocrBusy) "Čítam…" else "Odfotiť etiketu") }
-                OutlinedButton(enabled = !ocrBusy, onClick = { labelPicker.launch("image/*") }) { Text("Fotka z galérie") }
-            }
-            Muted("Odfoťte tabuľku výživových hodnôt na obale. Rozpoznanie beží v telefóne, bez internetu.")
-            if (ocrMsg.isNotBlank()) Text(ocrMsg, color = Pal.Amber)
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                NumField("Energia", kcal, { kcal = it; estApplied = false }, Modifier.weight(1f), suffix = "kcal")
-                NumField("Bielkoviny", protein, { protein = it }, Modifier.weight(1f), suffix = "g")
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                NumField("Tuky", fat, { fat = it }, Modifier.weight(1f), suffix = "g")
-                NumField("z toho nasýtené", satFat, { satFat = it }, Modifier.weight(1f), suffix = "g")
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                NumField("Sacharidy", carbs, { carbs = it }, Modifier.weight(1f), suffix = "g")
-                NumField("z toho cukry", sugar, { sugar = it }, Modifier.weight(1f), suffix = "g")
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                NumField("Vláknina", fiber, { fiber = it }, Modifier.weight(1f), suffix = "g")
-                NumField("Soľ", salt, { salt = it }, Modifier.weight(1f), suffix = "g")
-            }
-
-            SectionTitle("Núdzové zásoby")
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = emergency, onCheckedChange = { emergency = it })
-                Text("  Započítať do núdzových zásob")
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = water, onCheckedChange = { water = it })
-                Text("  Je to pitná voda")
-            }
-            TextField2("Poznámka", note, { note = it }, Modifier.fillMaxWidth(), singleLine = false)
-
             if (isNew) {
-                SectionTitle("Úvodná zásoba")
+                SectionTitle("Koľko ste kúpili")
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = addInitial, onCheckedChange = { addInitial = it })
                     Text("Rovno pridať do zásob")
@@ -424,9 +380,111 @@ fun ItemEditScreen(d: Dest.ItemEdit) {
                 if (addInitial) {
                     NumField("Množstvo", initQty, { initQty = it }, Modifier.fillMaxWidth(), suffix = uom.label)
                     DateField("Dátum expirácie", initExpiry, { initExpiry = it }, Modifier.fillMaxWidth())
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(EXPIRY_CHIPS.size) { idx ->
+                            FilterChip(
+                                selected = false,
+                                onClick = { initExpiry = Calc.today() + EXPIRY_CHIPS[idx].second },
+                                label = { Text(EXPIRY_CHIPS[idx].first) }
+                            )
+                        }
+                    }
                 }
             }
-            Button(onClick = { save() }, modifier = Modifier.fillMaxWidth()) { Text("Uložiť") }
+
+            // ---- 3. Nepovinne udaje (zbalene) ----
+            ExpandSection("Viac možností", "značka, cena, výživové hodnoty, poznámka") {
+            ExpandSection(
+                "Čiarový kód a značka",
+                listOf(brand, ean).filter { it.isNotBlank() }.joinToString(" · ").ifBlank { "Doplniť údaje z internetu podľa EAN" },
+                initiallyOpen = ean.isNotBlank()
+            ) {
+                TextField2("Značka", brand, { brand = it }, Modifier.fillMaxWidth())
+                TextField2("Výrobca", manu, { manu = it }, Modifier.fillMaxWidth())
+                TextField2("Čiarový kód (EAN)", ean, { ean = it.filter { c -> c.isDigit() } }, Modifier.fillMaxWidth(), keyboard = KeyboardType.Number)
+                if (ean.length >= 8 && !Ean.valid(ean)) {
+                    Text("Kód nemá správnu kontrolnú číslicu, skontrolujte číslice.", color = Pal.Red)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(enabled = !loading && Ean.valid(ean), onClick = { lookup() }) {
+                        Text(if (loading) "Sťahujem…" else "Doplniť podľa EAN")
+                    }
+                    OutlinedButton(onClick = { openSearch() }) { Text("Hľadať podľa názvu") }
+                }
+            }
+            ExpandSection(
+                "Cena a upozornenia",
+                listOf(
+                    if (price.isNotBlank()) price + " €" else "",
+                    if (minQty.isNotBlank()) "min. " + minQty + " " + uom.label else ""
+                ).filter { it.isNotBlank() }.joinToString(" · ")
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Top) {
+                    NumField("Cena", price, { price = it }, Modifier.weight(1f), suffix = "€")
+                    Picker("Cena je", PriceBasis.entries.map { it.label }, basisIdx, { basisIdx = it }, Modifier.weight(1f))
+                }
+                NumField("Minimálna zásoba (upozornenie)", minQty, { minQty = it }, Modifier.fillMaxWidth(), suffix = uom.label)
+                val guessOpen = Kinds.openDays(Item(name = name, brand = brand, kind = kind, category = db.categories.getOrElse(catIdx) { "Iné" }))
+                NumField(
+                    "Trvanlivosť po otvorení", openDaysText, { openDaysText = it.filter { c -> c.isDigit() } }, Modifier.fillMaxWidth(),
+                    suffix = "dní", supporting = "Prázdne = odhad podľa druhu (" + guessOpen + " dní)"
+                )
+            }
+            ExpandSection(
+                "Výživové hodnoty",
+                if (kcal.isNotBlank()) kcal + " kcal na 100 " + (if (liquid) "ml" else "g") + (if (estApplied) " (odhad)" else "") else "Nevyplnené"
+            ) {
+                Muted("Hodnoty na 100 " + (if (liquid) "ml" else "g"))
+                val est = remember(kind, name, brand) { Nutri.estimate(kind, name + " " + brand) }
+                if (est != null && kcal.isBlank()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Nemáte údaje z obalu? Použite priemerné hodnoty", fontWeight = FontWeight.Medium)
+                        Muted(est.title + " (odhad): " + est.summary())
+                        OutlinedButton(onClick = { applyEstimate(est) }) { Text("Použiť odhad") }
+                    }
+                }
+                if (estApplied && kcal.isNotBlank()) Muted("Hodnoty sú len priemerný odhad.")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(enabled = !ocrBusy, onClick = {
+                        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) launchCamera()
+                        else camPermission.launch(Manifest.permission.CAMERA)
+                    }) { Text(if (ocrBusy) "Čítam…" else "Odfotiť etiketu") }
+                    OutlinedButton(enabled = !ocrBusy, onClick = { labelPicker.launch("image/*") }) { Text("Z galérie") }
+                }
+                if (ocrMsg.isNotBlank()) Text(ocrMsg, color = Pal.Amber)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    NumField("Energia", kcal, { kcal = it; estApplied = false }, Modifier.weight(1f), suffix = "kcal")
+                    NumField("Bielkoviny", protein, { protein = it }, Modifier.weight(1f), suffix = "g")
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    NumField("Tuky", fat, { fat = it }, Modifier.weight(1f), suffix = "g")
+                    NumField("z toho nasýtené", satFat, { satFat = it }, Modifier.weight(1f), suffix = "g")
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    NumField("Sacharidy", carbs, { carbs = it }, Modifier.weight(1f), suffix = "g")
+                    NumField("z toho cukry", sugar, { sugar = it }, Modifier.weight(1f), suffix = "g")
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    NumField("Vláknina", fiber, { fiber = it }, Modifier.weight(1f), suffix = "g")
+                    NumField("Soľ", salt, { salt = it }, Modifier.weight(1f), suffix = "g")
+                }
+            }
+            ExpandSection(
+                "Núdzové zásoby a poznámka",
+                listOf(if (emergency) "v núdzových zásobách" else "", if (water) "pitná voda" else "", if (note.isNotBlank()) "poznámka" else "")
+                    .filter { it.isNotBlank() }.joinToString(" · ")
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = emergency, onCheckedChange = { emergency = it })
+                    Text("  Započítať do núdzových zásob")
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = water, onCheckedChange = { water = it })
+                    Text("  Je to pitná voda")
+                }
+                TextField2("Poznámka", note, { note = it }, Modifier.fillMaxWidth(), singleLine = false)
+            }
+            }
         }
     }
 

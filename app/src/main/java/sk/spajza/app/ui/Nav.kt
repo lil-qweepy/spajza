@@ -14,17 +14,16 @@ enum class Tab(val title: String) {
 
 sealed class Dest {
     data class ItemDetail(val id: Long) : Dest()
-    /** id = 0 pre novy produkt; ean a name predvyplnia formular. */
+    /** Uprava existujuceho produktu. id = 0 (stary formular noveho produktu) presmeruje na QuickAdd. */
     data class ItemEdit(val id: Long, val ean: String = "", val name: String = "", val kind: String = "") : Dest()
     data object Scan : Dest()
-    data object QuickAdd : Dest()
+    /** Jediny formular na pridanie potraviny; ean, name a kind (skener, recepty) ho predvyplnia. */
+    data class QuickAdd(val ean: String = "", val name: String = "", val kind: String = "") : Dest()
     data object Cook : Dest()
     data object Expiry : Dest()
     data object Emergency : Dest()
-    data object Tips : Dest()
     data object Lists : Dest()
     data object Stats : Dest()
-    data object Receipt : Dest()
     data object Moves : Dest()
     data object BackupScreen : Dest()
     data object SettingsScreen : Dest()
@@ -32,8 +31,15 @@ sealed class Dest {
     data class RecipeEdit(val id: Long) : Dest()
 }
 
+/** Polozka rozpracovaneho hromadneho nakupu (prezije otvorenie formulara produktu). */
+data class Pending(val itemId: Long, val name: String, val qty: Double, val expiry: Long?)
+
 class Navigator {
     var tab by mutableStateOf(Tab.Home)
+
+    /** Hromadne naskenovane produkty, ktore este nie su v zasobach. */
+    val bulkPending = mutableStateListOf<Pending>()
+    var bulkReview by mutableStateOf(false)
     val stack = mutableStateListOf<Dest>()
 
     /** Miesto, ktore ma Zasoby po otvoreni predfiltrovat (-1 = ziadne). */

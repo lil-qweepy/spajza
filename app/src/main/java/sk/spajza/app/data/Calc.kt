@@ -82,9 +82,6 @@ object Calc {
         return dt.format(dateTimeFmt)
     }
 
-    fun dayOf(millis: Long): Long =
-        Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate().toEpochDay()
-
     fun daysUntil(epochDay: Long?): Long? = if (epochDay == null) null else epochDay - today()
 
     fun expiryText(epochDay: Long?): String {
@@ -115,6 +112,25 @@ object Calc {
     }
 
     fun qty(v: Double, uom: Uom): String = num(v, 3) + " " + uom.label
+
+    /** Hmotnost v g ako text: od 1000 g v kg. */
+    fun massText(g: Double): String =
+        if (g >= 1000) num(g / 1000.0, 2) + " kg" else num(g, 0) + " g"
+
+    /** Objem v ml ako text: od 1000 ml v l. */
+    fun volumeText(ml: Double): String =
+        if (ml >= 1000) num(ml / 1000.0, 2) + " l" else num(ml, 0) + " ml"
+
+    /** Mnozstvo produktu tak, ako je zadane (napr. "2 ks"); g a ml sa od 1000 zobrazia v kg a l. */
+    fun qty(i: Item, v: Double): String = when {
+        i.uom == Uom.G && v >= 1000 -> massText(v)
+        i.uom == Uom.ML && v >= 1000 -> volumeText(v)
+        else -> qty(v, i.uom)
+    }
+
+    /** Celkova hmotnost / objem kusov podla obsahu 1 ks (napr. "1,5 kg" alebo "6 l"); null ak obsah nie je zadany. */
+    fun total(i: Item, v: Double): String? =
+        if (i.uom.isCountable && i.net > 0) (if (i.netLiquid) volumeText(v * i.net) else massText(v * i.net)) else null
 
     fun kcalText(v: Double): String = num(Math.round(v).toDouble()) + " kcal"
 

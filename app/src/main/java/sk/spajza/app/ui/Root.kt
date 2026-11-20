@@ -50,8 +50,18 @@ fun Root() {
     LaunchedEffect(undo?.id) {
         val u = undo
         if (u != null) {
-            val res = snackbar.showSnackbar(u.label, actionLabel = "Späť", duration = SnackbarDuration.Long)
+            // Ak caka aj navrh do kosika, vratenie sa ukaze kratsie, aby navrh nemusel dlho cakat.
+            val dur = if (store.shopSuggest.value != null) SnackbarDuration.Short else SnackbarDuration.Long
+            val res = snackbar.showSnackbar(u.label, actionLabel = "Späť", duration = dur)
             if (res == SnackbarResult.ActionPerformed) store.undo() else store.clearUndo(u.id)
+        }
+    }
+    val suggest by store.shopSuggest.collectAsState()
+    LaunchedEffect(suggest?.id) {
+        val sg = suggest
+        if (sg != null) {
+            val res = snackbar.showSnackbar(sg.text, actionLabel = "Do košíka", duration = SnackbarDuration.Long)
+            if (res == SnackbarResult.ActionPerformed) store.acceptSuggest(sg) else store.clearSuggest(sg.id)
         }
     }
 
@@ -77,14 +87,12 @@ fun Root() {
                 is Dest.ItemDetail -> ItemDetailScreen(top.id)
                 is Dest.ItemEdit -> ItemEditScreen(top)
                 is Dest.Scan -> ScanScreen()
-                is Dest.QuickAdd -> QuickAddScreen()
+                is Dest.QuickAdd -> QuickAddScreen(top)
                 is Dest.Cook -> CookScreen()
                 is Dest.Expiry -> ExpiryScreen()
                 is Dest.Emergency -> EmergencyScreen()
-                is Dest.Tips -> TipsScreen()
                 is Dest.Lists -> ListsScreen()
                 is Dest.Stats -> StatsScreen()
-                is Dest.Receipt -> ReceiptScreen()
                 is Dest.Moves -> MovesScreen()
                 is Dest.BackupScreen -> BackupScreen()
                 is Dest.SettingsScreen -> SettingsScreen()

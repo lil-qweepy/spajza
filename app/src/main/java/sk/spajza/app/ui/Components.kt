@@ -1,5 +1,6 @@
 package sk.spajza.app.ui
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -28,6 +29,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -56,7 +59,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -371,15 +373,27 @@ fun ConfirmDialog(
 }
 
 @Composable
-fun IconText(icon: ImageVector, text: String, color: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
-        Spacer(Modifier.size(6.dp))
-        Text(text, color = color, style = MaterialTheme.typography.bodySmall)
-    }
-}
-
-@Composable
 fun Dot(color: Color, size: Dp = 10.dp) {
     Box(Modifier.size(size).clip(CircleShape).background(color))
+}
+
+/** Zbalitelna sekcia formulara: nadpis, kratke zhrnutie a obsah, ktory sa rozbali klepnutim. */
+@Composable
+fun ExpandSection(
+    title: String, summary: String = "", initiallyOpen: Boolean = false,
+    content: @Composable () -> Unit
+) {
+    var open by remember { mutableStateOf(initiallyOpen) }
+    SCard(onClick = { open = !open }) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                if (!open && summary.isNotBlank()) Muted(summary)
+            }
+            Icon(if (open) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = null)
+        }
+        AnimatedVisibility(visible = open) {
+            Column(Modifier.padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { content() }
+        }
+    }
 }
